@@ -3,19 +3,6 @@
 version = 4
 
 [[package]]
-name = "Fast_Picard-Lefshetz_integral_code"
-version = "0.1.0"
-dependencies = [
- "approx",
- "criterion",
- "nalgebra",
- "num-complex",
- "rayon",
- "seq-macro",
- "thiserror",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -199,6 +186,19 @@ name = "either"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
+
+[[package]]
+name = "fast_picard_lefshetz_integral_code"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "criterion",
+ "nalgebra",
+ "num-complex",
+ "rayon",
+ "seq-macro",
+ "thiserror",
+]
 
 [[package]]
 name = "futures-core"

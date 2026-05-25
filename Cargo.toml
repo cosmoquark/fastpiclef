@@ -1,5 +1,5 @@
 [package]
-name = "Fast_Picard-Lefshetz_integral_code"
+name = "fast_picard_lefshetz_integral_code"
 version = "0.1.0"
 edition = "2024"
 
