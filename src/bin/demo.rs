@@ -6,7 +6,7 @@
 //! `Error::NotImplemented` — the binary's job for now is to prove the API
 //! shapes compile and the dispatch boundary is wired correctly.
 
-use Fast_Picard_Lefshetz_integral_code::{
+use fast_picard_lefshetz_integral_code::{
     Error, Phase, Solver, SolverConfig, as_dyn, solve,
 };
 use nalgebra::SVector;

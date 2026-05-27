@@ -7,7 +7,7 @@
 //!  - the dispatcher reports `DimensionMismatch` when the phase's own
 //!    dimension does not match the requested `d`.
 
-use Fast_Picard_Lefshetz_integral_code::{
+use fast_picard_lefshetz_integral_code::{
     Error, Phase, Solver, SolverConfig, as_dyn, solve,
 };
 use nalgebra::SVector;

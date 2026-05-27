@@ -19,12 +19,9 @@ pub use phase::{DynPhase, Phase, PhaseAsDyn, as_dyn};
 pub use quadrature::{GrundmannMoeller, Quadrature};
 pub use solver::{Output, Solver, SolverConfig};
 
-/// Range of compile-time dimensions for which the runtime dispatcher
-/// has a specialisation. Widen by editing this range and the macro below.
-pub const SUPPORTED_DIMS: std::ops::RangeInclusive<usize> = 1..=4;
-
 /// Runtime entry point. Dispatches on `d` to the right const-generic
-/// `Solver::<D>` specialisation.
+/// `Solver::<D>` specialisation. The supported range lives only in the
+/// `seq!` bound below — widen it there.
 pub fn solve(d: usize, phase: &dyn DynPhase, cfg: SolverConfig) -> Result<Output> {
     seq_macro::seq!(D in 1..=4 {
         match d {
