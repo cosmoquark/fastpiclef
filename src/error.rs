@@ -10,6 +10,8 @@ pub enum Error {
     FlowDiverged,
     #[error("pole encountered on contour")]
     PoleEncountered,
+    #[error("invalid input: {0}")]
+    InvalidInput(&'static str),
     #[error("not yet implemented: {0}")]
     NotImplemented(&'static str),
 }

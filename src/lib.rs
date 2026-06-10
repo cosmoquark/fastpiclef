@@ -1,4 +1,10 @@
-//! Fast Picard-Lefshetz Fresnel-integral solver — first skeleton.
+//! Fast Picard-Lefshetz Fresnel-integral solver.
+//!
+//! Pipeline: a real rectangular simplicial mesh ([`Mesh::rectangular`]) is
+//! sunk towards the Lefshetz thimbles by the descent flow of
+//! $h = -\mathrm{Im}\,\phi$ ([`Rk4`]), pruning simplices whose integrand has
+//! become negligible, and the resulting complex simplicial chain is
+//! integrated with Grundmann-Möller quadrature ([`GrundmannMoeller`]).
 //!
 //! The crate is generic in the integration dimension via `const D: usize`.
 //! Callers who know the dimension at compile time should reach for
