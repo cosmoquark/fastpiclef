@@ -31,7 +31,7 @@
 //! configurations on a Stokes line may stall the tracer (reported as an
 //! error rather than silently mis-assembled).
 
-use crate::saddles::{Saddle, find_saddles, grad, val};
+use crate::saddles::{Saddle, find_saddles, grad, second_derivative, val};
 use crate::{Error, Output, Phase, Result};
 use num_complex::Complex64;
 
@@ -95,6 +95,9 @@ struct Trace {
     stop: Stop,
     /// omega*h at the last accepted point.
     end_omega_h: f64,
+    /// Where the real axis was crossed (interpolated), for ascending traces
+    /// that ended with [`Stop::CrossedReal`].
+    crossing_re: Option<f64>,
 }
 
 /// Unit take-off direction of the *descending* branch pair at a saddle:
@@ -109,18 +112,19 @@ fn take_off_direction(phi2: Complex64) -> Complex64 {
     d
 }
 
-/// Follow the level curve $H = H_i$ from `saddle.z + eps*dir`.
-/// Descending branches move along $-\nabla h$ (h decreases), ascending
-/// along $+\nabla h$; both keep $H$ fixed with a Newton corrector.
+/// Follow the level curve $H = $ `target` from `start` (offset by a small
+/// kick when `start` is a stationary point, where the tangent formula is
+/// undefined). Descending branches move along $-\nabla h$ (h decreases),
+/// ascending along $+\nabla h$; both keep $H$ fixed with a Newton corrector.
 fn trace_level_curve(
     phase: &dyn Phase<1>,
     cfg: &ThimbleConfig,
-    saddle: &Saddle,
-    dir: Complex64,
+    start: Complex64,
+    target: f64,
+    kick: Option<Complex64>,
     ascending: bool,
 ) -> Result<Trace> {
     let omega = cfg.omega;
-    let target = saddle.big_h();
     let tol_target = 1e-11 * (1.0 + target.abs());
     let sign = if ascending { -1.0 } else { 1.0 };
     let stalled = || {
@@ -139,8 +143,11 @@ fn trace_level_curve(
         Some(Complex64::new(0.0, sign) * g.conj() / n)
     };
 
-    let eps = 1e-4 * (1.0 + saddle.z.norm());
-    let mut z = saddle.z + dir * Complex64::from(eps);
+    let eps = 1e-4 * (1.0 + start.norm());
+    let mut z = match kick {
+        Some(dir) => start + dir * Complex64::from(eps),
+        None => start,
+    };
     let mut omega_h = omega * (-val(phase, z).im);
     let mut ds = (10.0 * eps).min(cfg.ds_max);
     let mut points = vec![z];
@@ -152,6 +159,7 @@ fn trace_level_curve(
                 points,
                 stop: Stop::MorseFloor,
                 end_omega_h: omega_h,
+                crossing_re: None,
             });
         }
         if ascending && omega_h > -cfg.morse_threshold {
@@ -159,6 +167,7 @@ fn trace_level_curve(
                 points,
                 stop: Stop::Escaped,
                 end_omega_h: omega_h,
+                crossing_re: None,
             });
         }
         if z.re < cfg.re_range.0
@@ -170,6 +179,7 @@ fn trace_level_curve(
                 points,
                 stop: Stop::WindowExit,
                 end_omega_h: omega_h,
+                crossing_re: None,
             });
         }
 
@@ -213,15 +223,23 @@ fn trace_level_curve(
             break (zn, omega_h_new);
         };
 
-        let crossed = ascending && (z.im > 0.0) != (zn.im > 0.0);
+        let crossing_re = if ascending && (z.im > 0.0) != (zn.im > 0.0) {
+            // Interpolate the real-axis crossing (the signs differ, so the
+            // denominator cannot vanish).
+            let t = z.im / (z.im - zn.im);
+            Some(z.re + t * (zn.re - z.re))
+        } else {
+            None
+        };
         z = zn;
         omega_h = omega_h_new;
         points.push(z);
-        if crossed {
+        if crossing_re.is_some() {
             return Ok(Trace {
                 points,
                 stop: Stop::CrossedReal,
                 end_omega_h: omega_h,
+                crossing_re,
             });
         }
         ds = (1.5 * ds).min(cfg.ds_max);
@@ -230,6 +248,7 @@ fn trace_level_curve(
         points,
         stop: Stop::StepCap,
         end_omega_h: omega_h,
+        crossing_re: None,
     })
 }
 
@@ -269,14 +288,16 @@ const GL8_W: [f64; 8] = [
     0.1012285362903763,
 ];
 
-/// Integrate e^{i omega phi} along a polyline with both embedded rules.
+/// Integrate amplitude(z) * e^{i omega phi} along a polyline with both
+/// embedded rules.
 fn integrate_polyline(
     phase: &dyn Phase<1>,
     omega: f64,
     points: &[Complex64],
+    amplitude: &dyn Fn(Complex64) -> Complex64,
 ) -> (Complex64, Complex64) {
     let iw = Complex64::new(0.0, omega);
-    let f = |z: Complex64| (iw * val(phase, z)).exp();
+    let f = |z: Complex64| amplitude(z) * (iw * val(phase, z)).exp();
     let mut hi = Complex64::new(0.0, 0.0);
     let mut lo = Complex64::new(0.0, 0.0);
     for seg in points.windows(2) {
@@ -372,7 +393,8 @@ impl<'a> ThimbleSolver<'a> {
                 let d_asc = d_desc * Complex64::i();
                 let mut effective = false;
                 for dir in [d_asc, -d_asc] {
-                    let trace = trace_level_curve(phase, cfg, saddle, dir, true)?;
+                    let trace =
+                        trace_level_curve(phase, cfg, saddle.z, saddle.big_h(), Some(dir), true)?;
                     match trace.stop {
                         Stop::CrossedReal => {
                             effective = true;
@@ -399,8 +421,10 @@ impl<'a> ThimbleSolver<'a> {
                 continue;
             }
 
-            let plus = trace_level_curve(phase, cfg, saddle, d_desc, false)?;
-            let minus = trace_level_curve(phase, cfg, saddle, -d_desc, false)?;
+            let plus =
+                trace_level_curve(phase, cfg, saddle.z, saddle.big_h(), Some(d_desc), false)?;
+            let minus =
+                trace_level_curve(phase, cfg, saddle.z, saddle.big_h(), Some(-d_desc), false)?;
             for t in [&plus, &minus] {
                 if t.stop != Stop::MorseFloor {
                     // Truncated before the integrand died: budget the tail.
@@ -412,7 +436,8 @@ impl<'a> ThimbleSolver<'a> {
             piece.push(saddle.z);
             piece.extend(&plus.points);
 
-            let (p_hi, p_lo) = integrate_polyline(phase, cfg.omega, &piece);
+            let (p_hi, p_lo) =
+                integrate_polyline(phase, cfg.omega, &piece, &|_| Complex64::new(1.0, 0.0));
             hi += p_hi;
             lo += p_lo;
             self.pieces.push(piece);
@@ -423,6 +448,138 @@ impl<'a> ThimbleSolver<'a> {
             error: (hi - lo).norm() + extra_err,
         })
     }
+}
+
+/// Half-line variant for the polar 2D wrapper: deform
+/// $\int_0^\infty A(r)\,e^{i\omega\phi(r)}\,dr$ onto
+/// (i) the flow line of the *fixed* endpoint $r = 0$ — which is itself the
+/// level curve $H = \mathrm{Re}\,\phi(0)$, traced descending (when the
+/// endpoint happens to be a stationary point, the single descending branch
+/// with $\mathrm{Re} > 0$ take-off plays that role) — plus
+/// (ii) the thimbles of the effective saddles, where effectiveness now
+/// refers to the *positive* axis: real saddles need $\mathrm{Re}\,z > 0$
+/// (the negative axis belongs to the $\theta + \pi$ radial problem), and
+/// complex saddles need their ascending contour to cross $\mathbb{R}_{>0}$.
+pub(crate) fn solve_half_line(
+    phase: &dyn Phase<1>,
+    cfg: &ThimbleConfig,
+    amplitude: &dyn Fn(Complex64) -> Complex64,
+) -> Result<Output> {
+    if !(cfg.omega > 0.0) {
+        return Err(Error::InvalidInput("omega must be > 0"));
+    }
+    let origin = Complex64::new(0.0, 0.0);
+    let mut hi = Complex64::new(0.0, 0.0);
+    let mut lo = Complex64::new(0.0, 0.0);
+    let mut extra_err = 0.0;
+
+    // (i) The endpoint piece, traversed from 0 outwards/downwards.
+    let target0 = val(phase, origin).re;
+    let g0 = grad(phase, origin);
+    let endpoint_is_saddle = g0.norm() < 1e-7;
+    let endpoint = if endpoint_is_saddle {
+        let phi2 = second_derivative(phase, origin);
+        if phi2.norm() < 10.0 * cfg.newton_tol.sqrt() {
+            return Err(Error::NotImplemented(
+                "degenerate stationary point at the radial endpoint r = 0 — \
+                 use the mesh-flow Solver",
+            ));
+        }
+        trace_level_curve(
+            phase,
+            cfg,
+            origin,
+            target0,
+            Some(take_off_direction(phi2)),
+            false,
+        )?
+    } else {
+        trace_level_curve(phase, cfg, origin, target0, None, false)?
+    };
+    if endpoint.stop != Stop::MorseFloor {
+        extra_err += endpoint.end_omega_h.exp();
+    }
+    let mut piece: Vec<Complex64> = if endpoint_is_saddle {
+        vec![origin]
+    } else {
+        Vec::new()
+    };
+    piece.extend(&endpoint.points);
+    let (p_hi, p_lo) = integrate_polyline(phase, cfg.omega, &piece, amplitude);
+    hi += p_hi;
+    lo += p_lo;
+
+    // (ii) Thimbles of the effective saddles on the positive half-plane.
+    let saddles = find_saddles(
+        phase,
+        cfg.re_range,
+        cfg.im_range,
+        cfg.seeds_per_axis,
+        cfg.newton_tol,
+    );
+    for saddle in &saddles {
+        if saddle.z.norm() < 1e-6 {
+            continue; // the endpoint logic above owns the origin
+        }
+        if saddle.second.norm() < 10.0 * cfg.newton_tol.sqrt() {
+            return Err(Error::NotImplemented(
+                "degenerate saddle (caustic) in the radial problem — use the \
+                 mesh-flow Solver",
+            ));
+        }
+        let is_real = saddle.z.im.abs() < 1e-9 * (1.0 + saddle.z.norm());
+        if is_real && saddle.z.re <= 0.0 {
+            continue;
+        }
+        let d_desc = take_off_direction(saddle.second);
+        if !is_real {
+            let d_asc = d_desc * Complex64::i();
+            let mut effective = false;
+            for dir in [d_asc, -d_asc] {
+                let trace =
+                    trace_level_curve(phase, cfg, saddle.z, saddle.big_h(), Some(dir), true)?;
+                match trace.stop {
+                    Stop::CrossedReal => {
+                        if trace.crossing_re.unwrap_or(f64::NEG_INFINITY) > 0.0 {
+                            effective = true;
+                            break;
+                        }
+                    }
+                    Stop::Escaped => {}
+                    Stop::WindowExit | Stop::StepCap => {
+                        extra_err += (cfg.omega * saddle.h()).exp();
+                    }
+                    Stop::MorseFloor => unreachable!("ascending trace"),
+                }
+            }
+            if !effective {
+                continue;
+            }
+        }
+        if cfg.omega * saddle.h() < cfg.morse_threshold {
+            extra_err += (cfg.omega * saddle.h()).exp();
+            continue;
+        }
+
+        let plus = trace_level_curve(phase, cfg, saddle.z, saddle.big_h(), Some(d_desc), false)?;
+        let minus = trace_level_curve(phase, cfg, saddle.z, saddle.big_h(), Some(-d_desc), false)?;
+        for t in [&plus, &minus] {
+            if t.stop != Stop::MorseFloor {
+                extra_err += t.end_omega_h.exp();
+            }
+        }
+        let mut piece: Vec<Complex64> = minus.points.iter().rev().copied().collect();
+        piece.push(saddle.z);
+        piece.extend(&plus.points);
+        let (p_hi, p_lo) = integrate_polyline(phase, cfg.omega, &piece, amplitude);
+        hi += p_hi;
+        lo += p_lo;
+    }
+
+    Ok(Output {
+        value: hi,
+        error: (hi - lo).norm() + extra_err,
+    })
 }
 
 #[cfg(test)]

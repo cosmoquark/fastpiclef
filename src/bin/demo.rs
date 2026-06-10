@@ -7,7 +7,8 @@
 //! debug builds).
 
 use fast_picard_lefshetz_integral_code::{
-    Phase, Solver, SolverConfig, ThimbleConfig, ThimbleSolver, as_dyn, phases::AiryPhase, solve,
+    Phase, PolarConfig, PolarSolver, Solver, SolverConfig, ThimbleConfig, ThimbleSolver, as_dyn,
+    phases::AiryPhase, solve,
 };
 use nalgebra::SVector;
 use num_complex::Complex64;
@@ -166,6 +167,50 @@ fn main() {
         out.value,
         out.error,
         Complex64::new(0.850_067_322_349_920_66, 0.0),
+        t,
+    );
+
+    // --- Polar 2D wrapper vs the 2D mesh flow: offset quadratic phase,
+    //     exact answer 2*pi*i/omega by translation invariance.
+    struct OffsetQuad;
+    impl Phase<2> for OffsetQuad {
+        fn value(&self, z: &SVector<Complex64, 2>) -> Complex64 {
+            let u = z[0] - 0.7;
+            let v = z[1] - 0.3;
+            0.5 * (u * u + v * v)
+        }
+        fn gradient(&self, z: &SVector<Complex64, 2>) -> SVector<Complex64, 2> {
+            SVector::<Complex64, 2>::new(z[0] - 0.7, z[1] - 0.3)
+        }
+    }
+    let exact_2d = analytic(2, omega);
+
+    let cfg = SolverConfig {
+        domain: vec![(-6.0, 6.0); 2],
+        delta: 0.05,
+        ..SolverConfig::default()
+    };
+    let t = Instant::now();
+    let out = Solver::<2>::new(&OffsetQuad, cfg).run().unwrap();
+    report(
+        "2D offset quadratic (mesh flow)",
+        out.value,
+        out.error,
+        exact_2d,
+        t,
+    );
+
+    let t = Instant::now();
+    let mut polar = PolarSolver::new(&OffsetQuad, PolarConfig::default());
+    let out = polar.run().unwrap();
+    report(
+        &format!(
+            "2D offset quadratic (polar wrapper, {} thetas)",
+            polar.thetas_used()
+        ),
+        out.value,
+        out.error,
+        exact_2d,
         t,
     );
 }
