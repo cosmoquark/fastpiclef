@@ -259,7 +259,7 @@ packages:
 - pypi: ./
   name: fast-picard-lefshetz-integral-code
   version: 0.1.0
-  sha256: 939c32fa5313f07bbec485bd361357020097a48152fe29692c431edfea7deb2f
+  sha256: 614f211bec3b68a61c4fb303ab947cfa31a81fc8540dc294cf9d3395c7f4a130
   requires_dist:
   - plind>=0.1.0
   requires_python: '>=3.12'

@@ -17,14 +17,18 @@ pub mod mesh;
 pub mod phase;
 pub mod phases;
 pub mod quadrature;
+pub mod saddles;
 pub mod solver;
+pub mod thimble;
 
 pub use error::{Error, Result};
 pub use flow::{Flow, Rk4, StepReport};
 pub use mesh::Mesh;
 pub use phase::{DynPhase, Phase, PhaseAsDyn, as_dyn};
 pub use quadrature::{GrundmannMoeller, Quadrature};
+pub use saddles::{Saddle, find_saddles, second_derivative};
 pub use solver::{Output, Solver, SolverConfig};
+pub use thimble::{ThimbleConfig, ThimbleSolver};
 
 /// Runtime entry point. Dispatches on `d` to the right const-generic
 /// `Solver::<D>` specialisation. The supported range lives only in the

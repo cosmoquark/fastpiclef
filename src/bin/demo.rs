@@ -6,7 +6,9 @@
 //! Run with `cargo run --release --bin demo` (the 2D mesh is sluggish in
 //! debug builds).
 
-use fast_picard_lefshetz_integral_code::{Phase, Solver, SolverConfig, as_dyn, solve};
+use fast_picard_lefshetz_integral_code::{
+    Phase, Solver, SolverConfig, ThimbleConfig, ThimbleSolver, as_dyn, phases::AiryPhase, solve,
+};
 use nalgebra::SVector;
 use num_complex::Complex64;
 use std::f64::consts::{FRAC_PI_4, PI};
@@ -123,7 +125,47 @@ fn main() {
         solve(99, &dyn_1d, SolverConfig::default()).unwrap_err()
     );
     println!(
-        "solve(3,  2D phase): {:?}",
+        "solve(3,  2D phase): {:?}\n",
         solve(3, &dyn_2d, SolverConfig::default()).unwrap_err()
+    );
+
+    // --- Constant-phase contour solver (Shi 2024) vs the mesh flow,
+    //     same Airy phase, same exact answer (scipy): 2π Ai(-1).
+    let airy = AiryPhase { y: 1.0 };
+    let airy_exact = Complex64::new(3.365_028_273_002_628_2, 0.0);
+
+    let cfg = SolverConfig {
+        domain: vec![(-6.0, 6.0)],
+        delta: 0.025,
+        flow_steps: 20,
+        ..SolverConfig::default()
+    };
+    let t = Instant::now();
+    let out = Solver::<1>::new(&airy, cfg).run().unwrap();
+    report("Airy y=1 (mesh flow)", out.value, out.error, airy_exact, t);
+
+    let t = Instant::now();
+    let out = ThimbleSolver::new(&airy, ThimbleConfig::default())
+        .run()
+        .unwrap();
+    report(
+        "Airy y=1 (thimble tracer)",
+        out.value,
+        out.error,
+        airy_exact,
+        t,
+    );
+
+    let airy_down = AiryPhase { y: -1.0 };
+    let t = Instant::now();
+    let out = ThimbleSolver::new(&airy_down, ThimbleConfig::default())
+        .run()
+        .unwrap();
+    report(
+        "Airy y=-1, complex saddle only (thimble tracer)",
+        out.value,
+        out.error,
+        Complex64::new(0.850_067_322_349_920_66, 0.0),
+        t,
     );
 }
