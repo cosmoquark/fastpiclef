@@ -27,6 +27,11 @@ pub struct SolverConfig {
     pub flow_steps: usize,
     /// Step size for the descent integrator.
     pub dt_init: f64,
+    /// Speed cap for the descent field (see [`Rk4`]): keeps fixed-step
+    /// integration stable when $|\nabla\phi|$ grows superlinearly, without
+    /// changing the pathlines (hence the integral). Raise it if the
+    /// stationary points of interest live where $|\nabla\phi|$ exceeds it.
+    pub max_speed: f64,
     /// Grundmann-Möller order $s$ (polynomial degree $2s+1$); must be >= 1.
     pub quad_order: u32,
     /// Frequency $\omega$ entering the integrand $e^{i \omega \phi}$.
@@ -41,6 +46,7 @@ impl Default for SolverConfig {
             morse_threshold: -30.0,
             flow_steps: 30,
             dt_init: 0.05,
+            max_speed: 10.0,
             quad_order: 3,
             omega: 1.0,
         }
@@ -70,7 +76,10 @@ pub struct Solver<'a, const D: usize> {
 
 impl<'a, const D: usize> Solver<'a, D> {
     pub fn new(phase: &'a dyn Phase<D>, cfg: SolverConfig) -> Self {
-        let flow = Rk4 { dt: cfg.dt_init };
+        let flow = Rk4 {
+            dt: cfg.dt_init,
+            max_speed: cfg.max_speed,
+        };
         let quad = GrundmannMoeller {
             order: cfg.quad_order,
         };
@@ -100,6 +109,9 @@ impl<'a, const D: usize> Solver<'a, D> {
     pub fn run(&mut self) -> Result<Output> {
         if !(self.cfg.omega > 0.0) {
             return Err(Error::InvalidInput("omega must be > 0"));
+        }
+        if !(self.cfg.max_speed > 0.0) {
+            return Err(Error::InvalidInput("max_speed must be > 0"));
         }
         let domain: [(f64, f64); D] = if self.cfg.domain.is_empty() {
             [(-8.0, 8.0); D]

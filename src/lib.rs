@@ -15,6 +15,7 @@ pub mod error;
 pub mod flow;
 pub mod mesh;
 pub mod phase;
+pub mod phases;
 pub mod quadrature;
 pub mod solver;
 

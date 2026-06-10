@@ -27,10 +27,22 @@ pub trait Flow<const D: usize> {
     fn step<P: Phase<D> + ?Sized>(&mut self, mesh: &mut Mesh<D>, phase: &P) -> Result<StepReport>;
 }
 
-/// Fixed-step classical RK4 integrator on the raw descent field.
+/// Fixed-step classical RK4 integrator on the speed-capped descent field.
+///
+/// The raw field $i\,\overline{\nabla\phi}$ can grow superlinearly in $|z|$
+/// (already $|z|^2$ for a cubic phase), in which case outer trajectories
+/// reach infinity in *finite* flow time and any fixed-step integrator
+/// overflows. We therefore saturate the speed at `max_speed`: rescaling the
+/// field by a positive scalar preserves its integral curves — hence the
+/// deformed contour and the value of the integral — and only slows
+/// traversal; the slowed far-out simplices are exactly the ones pruning
+/// removes. (Unlike a unit normalisation $v/|v|$, saturation leaves the
+/// field untouched near saddles, where the natural slowdown prevents
+/// overshooting the thimble.)
 #[derive(Debug, Clone, Copy)]
 pub struct Rk4 {
     pub dt: f64,
+    pub max_speed: f64,
 }
 
 impl<const D: usize> Flow<D> for Rk4 {
@@ -39,10 +51,18 @@ impl<const D: usize> Flow<D> for Rk4 {
         let dt = Complex64::from(self.dt);
         let half = Complex64::from(0.5 * self.dt);
         let sixth = Complex64::from(self.dt / 6.0);
+        let cap = self.max_speed;
 
-        // i * conj(grad phi), componentwise: i * conj(a + ib) = b + ia.
-        let velocity =
-            |z: &SVector<Complex64, D>| phase.gradient(z).map(|g| Complex64::new(g.im, g.re));
+        // i * conj(grad phi), componentwise: i * conj(a + ib) = b + ia,
+        // saturated at |v| = cap.
+        let velocity = |z: &SVector<Complex64, D>| {
+            let mut v = phase.gradient(z).map(|g| Complex64::new(g.im, g.re));
+            let speed = v.norm();
+            if speed > cap {
+                v *= Complex64::from(cap / speed);
+            }
+            v
+        };
 
         // (max |Δz|, Σ h, active count, all finite)
         let (max_step, h_sum, count, finite) = mesh
@@ -99,7 +119,12 @@ mod tests {
         let mut mesh = Mesh::<1>::rectangular(&[(-2.0, 2.0)], 0.5).unwrap();
         let re_phi_before: Vec<f64> = mesh.points.iter().map(|z| Quad1D.value(z).re).collect();
 
-        let mut flow = Rk4 { dt: 0.05 };
+        // max_speed chosen high enough that this test's trajectories
+        // (|v| <= 4) never saturate, so the exact-trajectory check holds.
+        let mut flow = Rk4 {
+            dt: 0.05,
+            max_speed: 10.0,
+        };
         let mut last_mean = 0.0;
         for _ in 0..20 {
             let report = Flow::<1>::step(&mut flow, &mut mesh, &Quad1D).unwrap();
