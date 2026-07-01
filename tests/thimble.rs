@@ -6,7 +6,8 @@
 //! generated 2026-06-10 with scipy (see tests/airy.rs).
 
 use fast_picard_lefshetz_integral_code::{
-    Error, Phase, ThimbleConfig, ThimbleSolver, phases::AiryPhase,
+    Error, Phase, SolveMethod, SolverConfig, ThimbleConfig, ThimbleSolver, phases::AiryPhase,
+    solve_1d_hybrid,
 };
 use nalgebra::SVector;
 use num_complex::Complex64;
@@ -88,11 +89,37 @@ fn caustic_is_rejected_with_clear_error() {
     let phase = AiryPhase { y: 0.0 };
     let mut solver = ThimbleSolver::new(&phase, ThimbleConfig::default());
     match solver.run() {
-        Err(Error::NotImplemented(msg)) => {
-            assert!(msg.contains("degenerate"), "unexpected message: {msg}")
-        }
-        other => panic!("expected NotImplemented for the caustic, got {other:?}"),
+        Err(Error::DegenerateSaddle) => {}
+        other => panic!("expected DegenerateSaddle for the caustic, got {other:?}"),
     }
+}
+
+#[test]
+fn hybrid_falls_back_to_mesh_at_the_caustic() {
+    // The thimble solver cannot treat the y=0 caustic; the hybrid must route
+    // to the mesh solver and recover the exact answer 2π ω^{-1/3} Ai(0).
+    let mesh_cfg = SolverConfig {
+        domain: vec![(-6.0, 6.0)],
+        delta: 0.025,
+        flow_steps: 20,
+        ..SolverConfig::default()
+    };
+    // A regular case stays on the fast path...
+    let (_out, how) = solve_1d_hybrid(
+        &AiryPhase { y: 1.0 },
+        ThimbleConfig::default(),
+        mesh_cfg.clone(),
+    )
+    .unwrap();
+    assert_eq!(how, SolveMethod::Thimble);
+
+    // ...the caustic falls back and is still correct.
+    let (out, how) =
+        solve_1d_hybrid(&AiryPhase { y: 0.0 }, ThimbleConfig::default(), mesh_cfg).unwrap();
+    assert_eq!(how, SolveMethod::MeshFallback);
+    let exact = 2.230_707_051_824_495_6;
+    let rel = (out.value - Complex64::new(exact, 0.0)).norm() / exact;
+    assert!(rel < 1e-6, "hybrid caustic value off: rel={rel:.3e}");
 }
 
 #[test]

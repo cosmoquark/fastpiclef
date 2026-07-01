@@ -30,7 +30,7 @@ pub use polar::{PolarConfig, PolarSolver};
 pub use quadrature::{GrundmannMoeller, Quadrature};
 pub use saddles::{Saddle, find_saddles, second_derivative};
 pub use solver::{Output, Solver, SolverConfig};
-pub use thimble::{ThimbleConfig, ThimbleSolver};
+pub use thimble::{SolveMethod, ThimbleConfig, ThimbleSolver, solve_1d_hybrid};
 
 /// Runtime entry point. Dispatches on `d` to the right const-generic
 /// `Solver::<D>` specialisation. The supported range lives only in the

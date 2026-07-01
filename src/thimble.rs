@@ -32,7 +32,7 @@
 //! error rather than silently mis-assembled).
 
 use crate::saddles::{Saddle, find_saddles, grad, second_derivative, val};
-use crate::{Error, Output, Phase, Result};
+use crate::{Error, Output, Phase, Result, Solver, SolverConfig};
 use num_complex::Complex64;
 
 /// Knobs for the constant-phase contour pipeline.
@@ -127,11 +127,7 @@ fn trace_level_curve(
     let omega = cfg.omega;
     let tol_target = 1e-11 * (1.0 + target.abs());
     let sign = if ascending { -1.0 } else { 1.0 };
-    let stalled = || {
-        Err(Error::InvalidInput(
-            "constant-phase trace stalled (Stokes line or pole?)",
-        ))
-    };
+    let stalled = || Err(Error::TraceStalled);
 
     // Unit tangent of the level curve: descending = -grad h = i conj(phi').
     let tangent = |z: Complex64| -> Option<Complex64> {
@@ -379,10 +375,7 @@ impl<'a> ThimbleSolver<'a> {
             // indistinguishable from a caustic. (Phases with a genuinely tiny
             // |phi''| at a saddle need a tighter `newton_tol`.)
             if saddle.second.norm() < 10.0 * cfg.newton_tol.sqrt() {
-                return Err(Error::NotImplemented(
-                    "degenerate saddle (caustic) in ThimbleSolver — use the \
-                     mesh-flow Solver",
-                ));
+                return Err(Error::DegenerateSaddle);
             }
 
             // Effectiveness: real saddles lie on the original contour;
@@ -480,10 +473,7 @@ pub(crate) fn solve_half_line(
     let endpoint = if endpoint_is_saddle {
         let phi2 = second_derivative(phase, origin);
         if phi2.norm() < 10.0 * cfg.newton_tol.sqrt() {
-            return Err(Error::NotImplemented(
-                "degenerate stationary point at the radial endpoint r = 0 — \
-                 use the mesh-flow Solver",
-            ));
+            return Err(Error::DegenerateSaddle);
         }
         trace_level_curve(
             phase,
@@ -522,10 +512,7 @@ pub(crate) fn solve_half_line(
             continue; // the endpoint logic above owns the origin
         }
         if saddle.second.norm() < 10.0 * cfg.newton_tol.sqrt() {
-            return Err(Error::NotImplemented(
-                "degenerate saddle (caustic) in the radial problem — use the \
-                 mesh-flow Solver",
-            ));
+            return Err(Error::DegenerateSaddle);
         }
         let is_real = saddle.z.im.abs() < 1e-9 * (1.0 + saddle.z.norm());
         if is_real && saddle.z.re <= 0.0 {
@@ -580,6 +567,46 @@ pub(crate) fn solve_half_line(
         value: hi,
         error: (hi - lo).norm() + extra_err,
     })
+}
+
+/// Which solver produced a [`solve_1d_hybrid`] result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SolveMethod {
+    /// The fast constant-phase contour solver succeeded.
+    Thimble,
+    /// The thimble solver hit a configuration it cannot treat uniformly
+    /// (a caustic or a Stokes-line/pole stall) and the robust mesh-flow
+    /// solver was used instead.
+    MeshFallback,
+}
+
+/// Solve the 1D Fresnel integral with the fast thimble solver, falling back
+/// to the mesh-flow [`Solver`] when the thimble solver reports a structural
+/// difficulty it has no uniform treatment for — a degenerate saddle
+/// ([`Error::DegenerateSaddle`], i.e. a caustic) or a stalled trace
+/// ([`Error::TraceStalled`], i.e. a Stokes-line configuration). This is the
+/// recommended way to "route around" those two failure modes rather than
+/// attempt their (research-grade) uniform treatment in the thimble solver.
+///
+/// Note the fallback's scope: it is the right move for caustics and Stokes
+/// lines, where the thimble solver fails *and the mesh solver is robust*. It
+/// is **not** a remedy for the strong-lens/near-pole regime, where the roles
+/// reverse — there the mesh solver is the fragile one and the thimble result
+/// should be preferred. The thimble solver does not raise an error in that
+/// regime, so this fallback is never triggered by it.
+pub fn solve_1d_hybrid(
+    phase: &dyn Phase<1>,
+    thimble_cfg: ThimbleConfig,
+    mesh_cfg: SolverConfig,
+) -> Result<(Output, SolveMethod)> {
+    match ThimbleSolver::new(phase, thimble_cfg).run() {
+        Ok(out) => Ok((out, SolveMethod::Thimble)),
+        Err(Error::DegenerateSaddle | Error::TraceStalled) => {
+            let out = Solver::<1>::new(phase, mesh_cfg).run()?;
+            Ok((out, SolveMethod::MeshFallback))
+        }
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]
