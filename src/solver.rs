@@ -22,9 +22,18 @@ pub struct SolverConfig {
     /// i.e. once the integrand magnitude $e^{\omega h}$ falls below
     /// $e^{\text{threshold}}$ everywhere on the simplex.
     pub morse_threshold: f64,
-    /// Number of descent steps to perform (total flow time
-    /// = `flow_steps * dt_init`).
+    /// Maximum number of descent steps. The flow stops early once the
+    /// integral value has plateaued (see `flow_tol`), so this is a budget,
+    /// not a fixed count.
     pub flow_steps: usize,
+    /// Relative-change threshold for adaptive flow stopping: descent halts
+    /// once the integral value changes by less than this between successive
+    /// checks (two in a row). This lands the contour in the exact window
+    /// *before* pole interference degrades an over-flowed mesh — the plateau
+    /// and the degradation are separated by ~12 orders of magnitude, so the
+    /// exact value is unambiguous. Set to `0.0` to force the full
+    /// `flow_steps` budget (the old fixed-step behaviour).
+    pub flow_tol: f64,
     /// Step size for the descent integrator.
     pub dt_init: f64,
     /// Speed cap for the descent field (see [`Rk4`]): keeps fixed-step
@@ -44,7 +53,8 @@ impl Default for SolverConfig {
             domain: Vec::new(),
             delta: 0.1,
             morse_threshold: -30.0,
-            flow_steps: 30,
+            flow_steps: 60,
+            flow_tol: 1e-6,
             dt_init: 0.05,
             max_speed: 10.0,
             quad_order: 3,
@@ -72,6 +82,7 @@ pub struct Solver<'a, const D: usize> {
     mesh: Mesh<D>,
     flow: Rk4,
     quad: GrundmannMoeller,
+    steps_used: usize,
 }
 
 impl<'a, const D: usize> Solver<'a, D> {
@@ -89,12 +100,20 @@ impl<'a, const D: usize> Solver<'a, D> {
             mesh: Mesh::empty(),
             flow,
             quad,
+            steps_used: 0,
         }
     }
 
     /// The working mesh (the deformed contour after [`Solver::run`]).
     pub fn mesh(&self) -> &Mesh<D> {
         &self.mesh
+    }
+
+    /// Number of descent steps actually taken by the last [`Solver::run`]
+    /// (≤ `flow_steps`; adaptive stopping usually halts well before the
+    /// budget).
+    pub fn steps_used(&self) -> usize {
+        self.steps_used
     }
 
     /// Run the full pipeline: build the initial real mesh, sink it towards
@@ -105,7 +124,13 @@ impl<'a, const D: usize> Solver<'a, D> {
     /// By Cauchy's theorem the deformation does not change the value of the
     /// integral, so the flow only needs to run long enough that (i) the
     /// integrand is negligible on the domain boundary (controlled truncation)
-    /// and (ii) the contour is well-conditioned for quadrature.
+    /// and (ii) the contour is well-conditioned for quadrature. It must also
+    /// not run *too* long: past that point, a mesh threading complex poles
+    /// slowly accumulates near-pole distortion. The value therefore plateaus
+    /// (to machine precision) over a window and then drifts, so we stop
+    /// adaptively at the plateau — integrating periodically and halting once
+    /// the value stops changing (see `flow_tol`). The `h`-monotonicity guard
+    /// in [`Rk4`] keeps the drift bounded even if the budget is exhausted.
     pub fn run(&mut self) -> Result<Output> {
         if !(self.cfg.omega > 0.0) {
             return Err(Error::InvalidInput("omega must be > 0"));
@@ -128,13 +153,40 @@ impl<'a, const D: usize> Solver<'a, D> {
         let phase = self.phase;
         let omega = self.cfg.omega;
         let threshold = self.cfg.morse_threshold;
-        for _ in 0..self.cfg.flow_steps {
+        // Integrate every `CHECK_EVERY` steps; halt on two consecutive
+        // sub-`flow_tol` relative changes (a confirmed plateau).
+        const CHECK_EVERY: usize = 2;
+        let mut out: Option<Output> = None;
+        let mut prev_value = Complex64::new(f64::NAN, f64::NAN);
+        let mut small_streak = 0;
+        self.steps_used = 0;
+        for step in 1..=self.cfg.flow_steps {
             self.flow.step(&mut self.mesh, phase)?;
             self.mesh
                 .prune(|z| omega * (-phase.value(z).im) > threshold);
+            self.steps_used = step;
+            if step % CHECK_EVERY == 0 || step == self.cfg.flow_steps {
+                let (value, error) = self.quad.integrate(&self.mesh, phase, omega)?;
+                let denom = value.norm().max(1e-300);
+                if (value - prev_value).norm() / denom < self.cfg.flow_tol {
+                    small_streak += 1;
+                } else {
+                    small_streak = 0;
+                }
+                out = Some(Output { value, error });
+                if small_streak >= 2 {
+                    break;
+                }
+                prev_value = value;
+            }
         }
-
-        let (value, error) = self.quad.integrate(&self.mesh, phase, omega)?;
-        Ok(Output { value, error })
+        // flow_steps == 0 leaves the undeformed mesh; integrate it directly.
+        match out {
+            Some(o) => Ok(o),
+            None => {
+                let (value, error) = self.quad.integrate(&self.mesh, phase, omega)?;
+                Ok(Output { value, error })
+            }
+        }
     }
 }

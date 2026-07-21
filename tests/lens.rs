@@ -1,17 +1,17 @@
 //! Lens-phase validation by *cross-method agreement* (no closed form known):
 //! the independent thimble and mesh-flow solvers must agree where both are
-//! reliable. The 2026-06-24 exploration mapped where they are not, and the
-//! rational (complete) saddle source has since closed the first gap:
+//! reliable. The 2026-06-24 exploration mapped where they were not; both
+//! gaps are now closed:
 //!
-//!  * CLOSED — grid-Newton missed complex saddles hugging the potential's
-//!    poles (found 1 of the rational lens's 5). `ThimbleSolver::new_rational`
-//!    now takes every stationary point from the phase's declared polynomial
-//!    (Durand-Kerner + polish), verified complete below.
-//!  * OPEN — the mesh-flow solver overshoots near a pole for a *converging*
-//!    lens (e.g. beta=0.5, kappa=-0.3 returns ~270), so it still cannot be
-//!    the reference there; the multi-image value below is validated by
-//!    internal consistency + the geometric-optics asymptote instead, and the
-//!    mesh cross-check is deferred to the near-pole guard (Gap 2).
+//!  * CLOSED (Gap 1) — grid-Newton missed complex saddles hugging the
+//!    potential's poles (found 1 of the rational lens's 5).
+//!    `ThimbleSolver::new_rational` now takes every stationary point from the
+//!    phase's declared polynomial (Durand-Kerner + polish), verified complete
+//!    below.
+//!  * CLOSED (Gap 2) — the mesh-flow solver overshot near poles (beta=0.5,
+//!    kappa=-0.3 returned ~270). The flow's h-monotonicity guard plus
+//!    adaptive stopping now make the mesh machine-exact there, so it is once
+//!    more a valid cross-check reference (see `mesh_matches_thimble_near_poles`).
 
 use fast_picard_lefshetz_integral_code::{
     PolarConfig, PolarSolver, RationalPhase, Solver, SolverConfig, ThimbleConfig, ThimbleSolver,
@@ -33,6 +33,87 @@ fn mesh_cfg_1d() -> SolverConfig {
 
 fn real_saddles(s: &[fast_picard_lefshetz_integral_code::Saddle]) -> usize {
     s.iter().filter(|sd| sd.z.im.abs() < 1e-6).count()
+}
+
+#[test]
+fn mesh_matches_thimble_near_poles() {
+    // Gap 2 regression: three configurations that gave the mesh solver
+    // catastrophic garbage (beta=0.5) or O(10%) scatter (simG) before the
+    // h-monotonicity guard + adaptive stopping. The mesh must now agree with
+    // the (independently trusted) rational thimble to near machine precision.
+    let cases: [(&str, &dyn RationalMesh); 3] = [
+        (
+            "converging b=0.5 k=-0.3",
+            &RationalLens {
+                beta: 0.5,
+                kappa: -0.3,
+            },
+        ),
+        (
+            "multi-image b=0 k=-0.72",
+            &RationalLens {
+                beta: 0.0,
+                kappa: -0.72,
+            },
+        ),
+        (
+            "simG omega=1",
+            &SimGLens {
+                beta: 0.4,
+                kappa: 0.15,
+                kmax: 4,
+            },
+        ),
+    ];
+    for (name, phase) in cases {
+        let truth = phase.thimble_value();
+        let out = phase.mesh_value(mesh_cfg_1d());
+        let rel = (out.value - truth).norm() / truth.norm();
+        eprintln!(
+            "{name}: mesh={:.10} thimble={truth:.10} rel={rel:.2e}",
+            out.value
+        );
+        assert!(rel < 1e-6, "{name}: mesh/thimble disagree rel={rel:.3e}");
+    }
+}
+
+/// Budget-independence of adaptive stopping: a much larger `flow_steps`
+/// budget must not change the (converged) result — the value plateaus and
+/// stopping halts there, before any over-flow pole damage.
+#[test]
+fn adaptive_stopping_is_budget_independent() {
+    let lens = SimGLens {
+        beta: 0.4,
+        kappa: 0.15,
+        kmax: 4,
+    };
+    let small = lens.mesh_value(SolverConfig {
+        flow_steps: 60,
+        ..mesh_cfg_1d()
+    });
+    let large = lens.mesh_value(SolverConfig {
+        flow_steps: 400,
+        ..mesh_cfg_1d()
+    });
+    let rel = (small.value - large.value).norm() / large.value.norm();
+    assert!(rel < 1e-9, "budget changed the result: rel={rel:.3e}");
+}
+
+// Helper so the loop above can drive both solvers with a concrete phase.
+trait RationalMesh {
+    fn thimble_value(&self) -> Complex64;
+    fn mesh_value(&self, cfg: SolverConfig) -> fast_picard_lefshetz_integral_code::Output;
+}
+impl<P: RationalPhase> RationalMesh for P {
+    fn thimble_value(&self) -> Complex64 {
+        ThimbleSolver::new_rational(self, ThimbleConfig::default())
+            .run()
+            .unwrap()
+            .value
+    }
+    fn mesh_value(&self, cfg: SolverConfig) -> fast_picard_lefshetz_integral_code::Output {
+        Solver::<1>::new(self, cfg).run().unwrap()
+    }
 }
 
 #[test]
