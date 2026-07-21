@@ -8,7 +8,8 @@
 
 use fast_picard_lefshetz_integral_code::{
     Phase, PolarConfig, PolarSolver, Solver, SolverConfig, ThimbleConfig, ThimbleSolver, as_dyn,
-    phases::AiryPhase, solve,
+    phases::{AiryPhase, RationalLens2D},
+    solve,
 };
 use nalgebra::SVector;
 use num_complex::Complex64;
@@ -212,5 +213,30 @@ fn main() {
         out.error,
         exact_2d,
         t,
+    );
+
+    // --- Rational (complete) saddle source in the polar wrapper: same 2D
+    //     lens through both saddle sources; the polynomial path replaces the
+    //     per-angle 16x16 grid-Newton search.
+    let lens = RationalLens2D {
+        beta: [0.4, 0.0],
+        kappa: 0.2,
+    };
+    let t = Instant::now();
+    let grid = PolarSolver::new(&lens, PolarConfig::default())
+        .run()
+        .unwrap();
+    let t_grid = t.elapsed();
+    let t = Instant::now();
+    let rational = PolarSolver::new_rational(&lens, PolarConfig::default())
+        .run()
+        .unwrap();
+    let t_rat = t.elapsed();
+    println!(
+        "2D rational lens (polar): grid-Newton saddles {t_grid:?}, polynomial saddles {t_rat:?}"
+    );
+    println!(
+        "  values agree to {:.3e}\n",
+        (grid.value - rational.value).norm() / grid.value.norm()
     );
 }

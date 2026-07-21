@@ -1,7 +1,15 @@
-//! Saddle-point (image) finding for 1D phases: Newton iteration on
-//! $\phi'(z) = 0$ from a grid of seeds, with numerical second derivatives,
-//! deduplication, and a window filter. This is the prerequisite step of the
-//! constant-phase contour method (Shi 2024, `refs/2409.12991v1.pdf`).
+//! Saddle-point (image) finding for 1D phases — the prerequisite step of
+//! the constant-phase contour method (Shi 2024, `refs/2409.12991v1.pdf`).
+//!
+//! Two sources with different guarantees:
+//! - [`find_saddles`]: Newton iteration from a grid of seeds. Works for any
+//!   analytic phase, but is *best-effort*: roots whose Newton basins are
+//!   smaller than the seed spacing are missed (observed for saddles hugging
+//!   the poles of rational lens potentials).
+//! - [`saddles_from_polynomial`]: complete by construction for phases whose
+//!   $\phi'(z) = 0$ clears to a polynomial (see [`crate::RationalPhase`]).
+//!   All roots come from Durand-Kerner ([`crate::roots::poly_roots`]) and
+//!   are then polished against the *true* $\phi'$.
 
 use crate::Phase;
 use nalgebra::SVector;
@@ -110,6 +118,72 @@ pub fn find_saddles(
             .expect("saddle coordinates are finite")
     });
     saddles
+}
+
+/// The *complete* saddle set of a phase whose $\phi'(z) = N(z)/D(z)$ with
+/// polynomial $N$ (coefficients supplied ascending; see
+/// [`crate::RationalPhase::stationary_polynomial`]).
+///
+/// The polynomial coefficients only need to be accurate enough to land each
+/// Durand-Kerner root inside its Newton basin — machine precision comes
+/// from the polish against the phase's own gradient. A root that fails to
+/// polish is an error (`InvalidInput`), never silently dropped: it almost
+/// always means the coefficients are inconsistent with the phase. Multiple
+/// roots collapse in the dedup and surface downstream as
+/// [`crate::Error::DegenerateSaddle`] (caustic) via the $|\phi''|$ cut.
+pub fn saddles_from_polynomial(
+    phase: &dyn Phase<1>,
+    coeffs: &[Complex64],
+    newton_tol: f64,
+) -> crate::Result<Vec<Saddle>> {
+    let roots = crate::roots::poly_roots(coeffs)?;
+    let mut polished: Vec<Complex64> = Vec::with_capacity(roots.len());
+    for mut z in roots {
+        let mut converged = false;
+        for _ in 0..10 {
+            let g = grad(phase, z);
+            if g.norm() < newton_tol {
+                converged = true;
+                break;
+            }
+            let g2 = second_derivative(phase, z);
+            if g2.norm() < 1e-300 || !z.is_finite() {
+                break;
+            }
+            z -= g / g2;
+        }
+        // Near-multiple roots stall Newton at |phi'| ~ sqrt-scale; accept
+        // them at the same threshold the degenerate-saddle cut uses, so the
+        // caustic path (not a hard error) handles them.
+        let near_degenerate_ok = grad(phase, z).norm() < newton_tol.sqrt();
+        if !((converged || near_degenerate_ok) && z.is_finite()) {
+            return Err(crate::Error::InvalidInput(
+                "polynomial saddle polishing failed (are the stationary-polynomial \
+                 coefficients consistent with the phase gradient?)",
+            ));
+        }
+        if !polished
+            .iter()
+            .any(|&r| (r - z).norm() < 1e-7 * (1.0 + z.norm()))
+        {
+            polished.push(z);
+        }
+    }
+
+    let mut saddles: Vec<Saddle> = polished
+        .into_iter()
+        .map(|z| Saddle {
+            z,
+            value: val(phase, z),
+            second: second_derivative(phase, z),
+        })
+        .collect();
+    saddles.sort_by(|a, b| {
+        (a.z.re, a.z.im)
+            .partial_cmp(&(b.z.re, b.z.im))
+            .expect("saddle coordinates are finite")
+    });
+    Ok(saddles)
 }
 
 #[cfg(test)]

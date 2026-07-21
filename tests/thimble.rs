@@ -49,6 +49,18 @@ fn quadratic_matches_analytic() {
 }
 
 #[test]
+fn airy_two_real_images_rational_source() {
+    // Same exact reference through the complete (polynomial) saddle source.
+    let phase = AiryPhase { y: 1.0 };
+    let out = ThimbleSolver::new_rational(&phase, ThimbleConfig::default())
+        .run()
+        .unwrap();
+    let exact = Complex64::new(3.365_028_273_002_628_2, 0.0);
+    let rel = (out.value - exact).norm() / exact.norm();
+    assert!(rel < 1e-9, "rational-source Airy off: rel={rel:.3e}");
+}
+
+#[test]
 fn airy_two_real_images() {
     check(
         &AiryPhase { y: 1.0 },

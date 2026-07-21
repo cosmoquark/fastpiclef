@@ -85,3 +85,40 @@ impl<'a, const D: usize> Phase<D> for DynAsPhase<'a, D> {
         SVector::<Complex64, D>::from_column_slice(&out)
     }
 }
+
+/// Opt-in capability for 1D phases whose derivative is a rational function:
+/// $\phi'(z) = N(z)/D(z)$ with polynomial $N, D$ and $D$ nonvanishing away
+/// from the poles of $\phi$.
+///
+/// Declaring it unlocks the *complete* saddle source
+/// ([`crate::saddles::saddles_from_polynomial`] via
+/// [`crate::ThimbleSolver::new_rational`]): every stationary point is found,
+/// with the guarantee grid-Newton searching cannot give. The coefficients
+/// are only a *locator* — each root is polished against the phase's own
+/// `gradient`, so they need to be accurate to Newton-basin size, not to
+/// machine precision. General analytic phases simply don't implement this
+/// trait and keep the grid-Newton path.
+pub trait RationalPhase: Phase<1> {
+    /// Ascending coefficients of $N(z)$ (index $k$ multiplies $z^k$).
+    fn stationary_polynomial(&self) -> Vec<Complex64>;
+
+    /// Poles of $\phi$ (zeros of $D$). Default: none (polynomial phases).
+    /// Consumed by the (planned) mesh near-pole guard and diagnostics.
+    fn poles(&self) -> Vec<Complex64> {
+        Vec::new()
+    }
+}
+
+/// 2D counterpart of [`RationalPhase`] for the polar decomposition: the
+/// restriction of the phase to the ray $\mathbf{z} = r\,\hat{n}(\theta)$
+/// must have a rational derivative in the complex radius $r$, with
+/// coefficients depending on $\hat{n} = (\cos\theta, \sin\theta)$.
+pub trait RationalPhase2D: Phase<2> {
+    /// Ascending coefficients of the cleared radial $\phi_\theta'(r)$.
+    fn radial_stationary_polynomial(&self, cos_t: f64, sin_t: f64) -> Vec<Complex64>;
+
+    /// Poles of the radial restriction. Default: none.
+    fn radial_poles(&self, _cos_t: f64, _sin_t: f64) -> Vec<Complex64> {
+        Vec::new()
+    }
+}

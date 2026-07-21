@@ -1,0 +1,4 @@
+# The distro rustc (>= 1.96 package) defaults to `clang` for linking, which
+# is not installed here; use the GCC driver instead.
+[target.x86_64-unknown-linux-gnu]
+linker = "cc"

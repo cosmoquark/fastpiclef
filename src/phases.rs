@@ -1,7 +1,16 @@
 //! Library of ready-made phase functions with known reference solutions,
 //! used for validation, convergence studies, and cross-code comparisons.
+//!
+//! Every phase here has a rational derivative, so all of them also declare
+//! the [`RationalPhase`] / [`RationalPhase2D`] capability: the complete
+//! (polynomial) saddle source applies. The coefficient expansions are
+//! verified in this module's tests against the identity
+//! $N(z) = \phi'(z) \cdot D(z)$ at sample points, so no hand algebra is
+//! trusted.
 
 use crate::Phase;
+use crate::phase::{RationalPhase, RationalPhase2D};
+use crate::roots::{poly_add, poly_derivative, poly_mul, poly_roots, poly_scale};
 use nalgebra::SVector;
 use num_complex::Complex64;
 
@@ -34,6 +43,17 @@ impl Phase<1> for AiryPhase {
     fn gradient(&self, z: &SVector<Complex64, 1>) -> SVector<Complex64, 1> {
         let z = z[0];
         SVector::<Complex64, 1>::new(z * z - self.y)
+    }
+}
+
+impl RationalPhase for AiryPhase {
+    /// $\phi'(z) = z^2 - y$ is already a polynomial: $N = z^2 - y$, $D = 1$.
+    fn stationary_polynomial(&self) -> Vec<Complex64> {
+        vec![
+            Complex64::from(-self.y),
+            Complex64::new(0.0, 0.0),
+            Complex64::from(1.0),
+        ]
     }
 }
 
@@ -73,6 +93,26 @@ impl Phase<1> for RationalLens {
     }
 }
 
+/// $N(z) = (z-\beta)(1+z^2)^2 + 2\kappa z$ (denominator $D = (1+z^2)^2$),
+/// shared by the 1D lens and the 2D lens's radial restriction.
+fn rational_lens_polynomial(beta: f64, kappa: f64) -> Vec<Complex64> {
+    // Expanded: z^5 - b z^4 + 2 z^3 - 2 b z^2 + (1 + 2 k) z - b.
+    [-beta, 1.0 + 2.0 * kappa, -2.0 * beta, 2.0, -beta, 1.0]
+        .into_iter()
+        .map(Complex64::from)
+        .collect()
+}
+
+impl RationalPhase for RationalLens {
+    fn stationary_polynomial(&self) -> Vec<Complex64> {
+        rational_lens_polynomial(self.beta, self.kappa)
+    }
+
+    fn poles(&self) -> Vec<Complex64> {
+        vec![Complex64::i(), -Complex64::i()]
+    }
+}
+
 /// Axisymmetric 2D lens with the same rational potential, holomorphically
 /// continued: with $s = z_0^2 + z_1^2$,
 /// $\phi(\mathbf{z}) = \tfrac12[(z_0-\beta_0)^2 + (z_1-\beta_1)^2]
@@ -106,6 +146,21 @@ impl Phase<2> for RationalLens2D {
             (z[0] - self.beta[0]) + c * z[0],
             (z[1] - self.beta[1]) + c * z[1],
         )
+    }
+}
+
+impl RationalPhase2D for RationalLens2D {
+    /// Along $\mathbf{z} = r \hat{n}$: $\phi_\theta(r) = (r^2 - 2 r b +
+    /// |\beta|^2)/2 - \kappa/(1+r^2)$ with $b = \beta \cdot \hat{n}$, so the
+    /// radial derivative clears to the same quintic as the 1D lens with
+    /// $\beta \to b$.
+    fn radial_stationary_polynomial(&self, cos_t: f64, sin_t: f64) -> Vec<Complex64> {
+        let b = self.beta[0] * cos_t + self.beta[1] * sin_t;
+        rational_lens_polynomial(b, self.kappa)
+    }
+
+    fn radial_poles(&self, _cos_t: f64, _sin_t: f64) -> Vec<Complex64> {
+        vec![Complex64::i(), -Complex64::i()]
     }
 }
 
@@ -166,5 +221,142 @@ impl Phase<1> for SimGLens {
         let (p, dp) = self.poly(z);
         // d/dz [-kappa/P] = +kappa P'/P^2
         SVector::<Complex64, 1>::new((z - self.beta) + self.kappa * dp / (p * p))
+    }
+}
+
+impl SimGLens {
+    /// Ascending coefficients of $P(z) = \sum_{k=0}^{k_\max} z^{2k}/k!$.
+    fn p_coeffs(&self) -> Vec<Complex64> {
+        let mut c = vec![Complex64::new(0.0, 0.0); 2 * self.kmax as usize + 1];
+        let mut fact = 1.0_f64;
+        for k in 0..=self.kmax as usize {
+            if k > 0 {
+                fact *= k as f64;
+            }
+            c[2 * k] = Complex64::from(1.0 / fact);
+        }
+        c
+    }
+}
+
+impl RationalPhase for SimGLens {
+    /// $N = (z - \beta) P^2 + \kappa P'$, degree $4 k_\max + 1$
+    /// (17 stationary points at $k_\max = 4$, matching Shi 2024, appendix A).
+    fn stationary_polynomial(&self) -> Vec<Complex64> {
+        let p = self.p_coeffs();
+        let p2 = poly_mul(&p, &p);
+        let z_minus_beta = [Complex64::from(-self.beta), Complex64::from(1.0)];
+        poly_add(
+            &poly_mul(&z_minus_beta, &p2),
+            &poly_scale(&poly_derivative(&p), Complex64::from(self.kappa)),
+        )
+    }
+
+    /// The $2 k_\max$ zeros of $P$, computed on call via the polynomial
+    /// root finder (an empty list is returned in the — unexpected —
+    /// event that the root finder fails on $P$).
+    fn poles(&self) -> Vec<Complex64> {
+        poly_roots(&self.p_coeffs()).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::roots::poly_eval;
+    use crate::saddles::grad;
+
+    /// Sample points for the identity checks, including one near the
+    /// rational lens's poles at ±i.
+    fn samples() -> Vec<Complex64> {
+        vec![
+            Complex64::new(0.3, 0.4),
+            Complex64::new(-1.2, 0.7),
+            Complex64::new(2.0, -0.3),
+            Complex64::new(0.05, 1.2),
+            Complex64::new(-0.8, -1.1),
+        ]
+    }
+
+    /// Assert N(z) = phi'(z) * D(z) at the sample points.
+    fn check_identity(phase: &dyn Phase<1>, n: &[Complex64], d: &[Complex64]) {
+        for z in samples() {
+            let lhs = poly_eval(n, z);
+            let rhs = grad(phase, z) * poly_eval(d, z);
+            assert!(
+                (lhs - rhs).norm() < 1e-10 * (1.0 + lhs.norm() + rhs.norm()),
+                "identity fails at {z}: N = {lhs}, phi' D = {rhs}"
+            );
+        }
+    }
+
+    #[test]
+    fn airy_polynomial_identity() {
+        let phase = AiryPhase { y: 0.8 };
+        check_identity(
+            &phase,
+            &phase.stationary_polynomial(),
+            &[Complex64::from(1.0)],
+        );
+    }
+
+    #[test]
+    fn rational_lens_polynomial_identity() {
+        let phase = RationalLens {
+            beta: 0.37,
+            kappa: -0.42,
+        };
+        // D = (1 + z^2)^2, built independently of the hand expansion.
+        let one_plus_z2 = [
+            Complex64::from(1.0),
+            Complex64::new(0.0, 0.0),
+            Complex64::from(1.0),
+        ];
+        let d = poly_mul(&one_plus_z2, &one_plus_z2);
+        check_identity(&phase, &phase.stationary_polynomial(), &d);
+    }
+
+    #[test]
+    fn rational_lens_2d_radial_identity() {
+        let lens = RationalLens2D {
+            beta: [0.4, -0.25],
+            kappa: 0.3,
+        };
+        let one_plus_z2 = [
+            Complex64::from(1.0),
+            Complex64::new(0.0, 0.0),
+            Complex64::from(1.0),
+        ];
+        let d = poly_mul(&one_plus_z2, &one_plus_z2);
+        for theta in [0.0, 0.9, 2.3, 4.1] {
+            let (c, s) = (f64::cos(theta), f64::sin(theta));
+            let n = lens.radial_stationary_polynomial(c, s);
+            for r in samples() {
+                // Radial derivative by the chain rule from the 2D gradient.
+                let g2 = lens.gradient(&SVector::<Complex64, 2>::new(r * c, r * s));
+                let radial_grad = g2[0] * c + g2[1] * s;
+                let lhs = poly_eval(&n, r);
+                let rhs = radial_grad * poly_eval(&d, r);
+                assert!(
+                    (lhs - rhs).norm() < 1e-10 * (1.0 + lhs.norm() + rhs.norm()),
+                    "radial identity fails at theta={theta}, r={r}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn simg_polynomial_identity_and_degree() {
+        let phase = SimGLens {
+            beta: 0.4,
+            kappa: 0.15,
+            kmax: 4,
+        };
+        let n = phase.stationary_polynomial();
+        assert_eq!(n.len(), 4 * 4 + 2, "degree must be 4 kmax + 1");
+        let p = phase.p_coeffs();
+        check_identity(&phase, &n, &poly_mul(&p, &p));
+        // P has 2 kmax zeros = poles of the potential.
+        assert_eq!(phase.poles().len(), 8);
     }
 }

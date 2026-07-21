@@ -9,17 +9,23 @@
 //! piece of the level set $H = H(z_i)$ that descends from the saddle $z_i$.
 //!
 //! Pipeline:
-//! 1. find the saddles $\phi'(z) = 0$ in a complex window ([`find_saddles`]);
-//! 2. select the *effective* saddles — those that are real, or whose
-//!    ascending constant-phase contour crosses the real axis (Shi's
-//!    criterion; the ascent can never touch $\mathbb{R}$ when the saddle has
-//!    $h > 0$, which is what silences the wrong member of a conjugate pair);
-//! 3. trace each effective thimble by a predictor-corrector that follows
+//! 1. find the saddles $\phi'(z) = 0$ — completely, from the phase's
+//!    declared polynomial when it is a [`RationalPhase`]
+//!    ([`saddles_from_polynomial`]); best-effort grid-Newton otherwise
+//!    ([`find_saddles`]);
+//! 2. weigh each saddle by its *signed traversal multiplicity*: real
+//!    saddles count once (left-to-right); a complex saddle counts once per
+//!    ascent crossing of $\mathbb{R}$ (Shi's effectiveness criterion), with
+//!    the *orientation inherited through that crossing* — see
+//!    `crossing_orientation`; the ascent can never touch $\mathbb{R}$ from
+//!    $h > 0$, which silences the wrong member of a conjugate pair;
+//! 3. trace each contributing thimble by a predictor-corrector that follows
 //!    the level curve $H = H_i$ (midpoint predictor along $\mp\nabla h$,
 //!    Newton corrector along $\nabla H$), stopping once
 //!    $\omega h <$ `morse_threshold` (integrand dead);
 //! 4. integrate $e^{i\omega\phi}$ along the traced polylines with embedded
-//!    Gauss-Legendre rules (8- vs 4-node) for the error estimate.
+//!    Gauss-Legendre rules (8- vs 4-node) for the error estimate, weighted
+//!    by the multiplicities.
 //!
 //! Tracing the level curve from the saddle realises Shi's
 //! "constant-phase contour method" without a global marching-squares grid:
@@ -31,8 +37,8 @@
 //! configurations on a Stokes line may stall the tracer (reported as an
 //! error rather than silently mis-assembled).
 
-use crate::saddles::{Saddle, find_saddles, grad, second_derivative, val};
-use crate::{Error, Output, Phase, Result, Solver, SolverConfig};
+use crate::saddles::{Saddle, find_saddles, grad, saddles_from_polynomial, second_derivative, val};
+use crate::{Error, Output, Phase, RationalPhase, Result, Solver, SolverConfig};
 use num_complex::Complex64;
 
 /// Knobs for the constant-phase contour pipeline.
@@ -98,6 +104,42 @@ struct Trace {
     /// Where the real axis was crossed (interpolated), for ascending traces
     /// that ended with [`Stop::CrossedReal`].
     crossing_re: Option<f64>,
+    /// Unit direction of the last accepted step. For [`Stop::CrossedReal`]
+    /// this is the tangent with which the trace crossed the real axis —
+    /// the datum that fixes the thimble's traversal orientation (see
+    /// `crossing_orientation`).
+    end_tangent: Complex64,
+}
+
+/// Signed multiplicity contributed by one ascent crossing of the original
+/// contour, for a *complex* saddle.
+///
+/// The deformed contour inherits its traversal of the thimble by continuity
+/// through the crossing point $a_i$: the ascent curve is the *stable*
+/// manifold of the descent flow, so the $x > a_i$ side of $\mathbb{R}$
+/// peels onto one specific descending branch. In the local conformal
+/// coordinate $v$ (stable = imaginary axis, unstable = real axis,
+/// orientation preserved), the $+\mathrm{Re}\,v$ branch is the *right*
+/// side of the ascent traversed saddle$\to\mathbb{R}$; mapping back, the
+/// $x > a_i$ exit branch is $-i\,a$ when the crossing tangent has
+/// $\mathrm{Im} > 0$ and $+i\,a$ otherwise ($a$ = launch direction of the
+/// traced ascent). The thimble piece is assembled with its "plus" branch
+/// along `d_desc`, so the crossing contributes $+1$ if the exit branch
+/// aligns with `d_desc` and $-1$ if it is the reversed traversal.
+///
+/// (For a *real* saddle the same continuity argument reduces to the
+/// left-to-right rule already built into `take_off_direction`.)
+fn crossing_orientation(ascent_dir: Complex64, end_tangent: Complex64, d_desc: Complex64) -> i32 {
+    let plus_dir = if end_tangent.im > 0.0 {
+        -Complex64::i() * ascent_dir
+    } else {
+        Complex64::i() * ascent_dir
+    };
+    if (plus_dir.conj() * d_desc).re > 0.0 {
+        1
+    } else {
+        -1
+    }
 }
 
 /// Unit take-off direction of the *descending* branch pair at a saddle:
@@ -147,6 +189,7 @@ fn trace_level_curve(
     let mut omega_h = omega * (-val(phase, z).im);
     let mut ds = (10.0 * eps).min(cfg.ds_max);
     let mut points = vec![z];
+    let mut last_dir = kick.unwrap_or(Complex64::new(0.0, 0.0));
 
     for _ in 0..20_000 {
         // Termination on the current point.
@@ -156,6 +199,7 @@ fn trace_level_curve(
                 stop: Stop::MorseFloor,
                 end_omega_h: omega_h,
                 crossing_re: None,
+                end_tangent: last_dir,
             });
         }
         if ascending && omega_h > -cfg.morse_threshold {
@@ -164,6 +208,7 @@ fn trace_level_curve(
                 stop: Stop::Escaped,
                 end_omega_h: omega_h,
                 crossing_re: None,
+                end_tangent: last_dir,
             });
         }
         if z.re < cfg.re_range.0
@@ -176,6 +221,7 @@ fn trace_level_curve(
                 stop: Stop::WindowExit,
                 end_omega_h: omega_h,
                 crossing_re: None,
+                end_tangent: last_dir,
             });
         }
 
@@ -227,6 +273,10 @@ fn trace_level_curve(
         } else {
             None
         };
+        let step = zn - z;
+        if step.norm() > 0.0 {
+            last_dir = step / Complex64::from(step.norm());
+        }
         z = zn;
         omega_h = omega_h_new;
         points.push(z);
@@ -236,6 +286,7 @@ fn trace_level_curve(
                 stop: Stop::CrossedReal,
                 end_omega_h: omega_h,
                 crossing_re,
+                end_tangent: last_dir,
             });
         }
         ds = (1.5 * ds).min(cfg.ds_max);
@@ -245,6 +296,7 @@ fn trace_level_curve(
         stop: Stop::StepCap,
         end_omega_h: omega_h,
         crossing_re: None,
+        end_tangent: last_dir,
     })
 }
 
@@ -313,7 +365,30 @@ fn integrate_polyline(
     (hi, lo)
 }
 
+/// Widen the tracing window to cover every found saddle (with margin).
+/// The complete polynomial source may legitimately return saddles outside
+/// the configured window — grid-Newton never did, it filtered — and a trace
+/// must never *start* out of bounds, or its error would be mis-budgeted.
+/// The saddle-search semantics are unchanged; only the trace bounds grow.
+fn extend_window(cfg: &ThimbleConfig, saddles: &[Saddle]) -> ThimbleConfig {
+    let mut out = cfg.clone();
+    let margin = 2.0;
+    for s in saddles {
+        out.re_range.0 = out.re_range.0.min(s.z.re - margin);
+        out.re_range.1 = out.re_range.1.max(s.z.re + margin);
+        out.im_range.0 = out.im_range.0.min(s.z.im - margin);
+        out.im_range.1 = out.im_range.1.max(s.z.im + margin);
+    }
+    out
+}
+
 /// 1D Fresnel-integral solver via constant-phase contours.
+///
+/// Construct with [`ThimbleSolver::new`] for a general analytic phase
+/// (grid-Newton saddle search, best-effort), or with
+/// [`ThimbleSolver::new_rational`] for a [`RationalPhase`] (complete
+/// polynomial saddle source — required for multi-image configurations,
+/// where a missed saddle silently corrupts the result).
 ///
 /// After [`ThimbleSolver::run`], the located saddles and the traced thimble
 /// polylines remain available through [`ThimbleSolver::saddles`] and
@@ -321,6 +396,9 @@ fn integrate_polyline(
 pub struct ThimbleSolver<'a> {
     phase: &'a dyn Phase<1>,
     cfg: ThimbleConfig,
+    /// `Some(N)` = complete saddle source from the roots of N (rational
+    /// phases); `None` = grid-Newton search.
+    polynomial: Option<Vec<Complex64>>,
     saddles: Vec<Saddle>,
     pieces: Vec<Vec<Complex64>>,
 }
@@ -330,6 +408,22 @@ impl<'a> ThimbleSolver<'a> {
         Self {
             phase,
             cfg,
+            polynomial: None,
+            saddles: Vec::new(),
+            pieces: Vec::new(),
+        }
+    }
+
+    /// Like [`ThimbleSolver::new`], but with the complete saddle source a
+    /// [`RationalPhase`] enables: every stationary point is a root of the
+    /// declared polynomial, found by Durand-Kerner and polished against the
+    /// phase's own gradient.
+    pub fn new_rational<P: RationalPhase>(phase: &'a P, cfg: ThimbleConfig) -> Self {
+        let polynomial = Some(phase.stationary_polynomial());
+        Self {
+            phase,
+            cfg,
+            polynomial,
             saddles: Vec::new(),
             pieces: Vec::new(),
         }
@@ -350,20 +444,23 @@ impl<'a> ThimbleSolver<'a> {
             return Err(Error::InvalidInput("omega must be > 0"));
         }
         let phase = self.phase;
-        let cfg = &self.cfg;
         self.pieces.clear();
-        self.saddles = find_saddles(
-            phase,
-            cfg.re_range,
-            cfg.im_range,
-            cfg.seeds_per_axis,
-            cfg.newton_tol,
-        );
+        self.saddles = match &self.polynomial {
+            Some(coeffs) => saddles_from_polynomial(phase, coeffs, self.cfg.newton_tol)?,
+            None => find_saddles(
+                phase,
+                self.cfg.re_range,
+                self.cfg.im_range,
+                self.cfg.seeds_per_axis,
+                self.cfg.newton_tol,
+            ),
+        };
         if self.saddles.is_empty() {
             return Err(Error::InvalidInput(
                 "no saddle point found in the search window",
             ));
         }
+        let cfg = &extend_window(&self.cfg, &self.saddles);
 
         let mut hi = Complex64::new(0.0, 0.0);
         let mut lo = Complex64::new(0.0, 0.0);
@@ -378,20 +475,24 @@ impl<'a> ThimbleSolver<'a> {
                 return Err(Error::DegenerateSaddle);
             }
 
-            // Effectiveness: real saddles lie on the original contour;
-            // complex saddles qualify iff an ascending branch reaches R.
+            // Effectiveness and traversal multiplicity. A real saddle lies
+            // on the original contour and is crossed once, left-to-right. A
+            // complex saddle enters once per ascent crossing of R, each with
+            // the orientation inherited through that crossing (see
+            // `crossing_orientation`); the signed sum is its multiplicity
+            // (0 = not effective, and crossings of opposite orientation
+            // cancel, as they must).
             let is_real = saddle.z.im.abs() < 1e-9 * (1.0 + saddle.z.norm());
             let d_desc = take_off_direction(saddle.second);
+            let mut multiplicity: i32 = if is_real { 1 } else { 0 };
             if !is_real {
                 let d_asc = d_desc * Complex64::i();
-                let mut effective = false;
                 for dir in [d_asc, -d_asc] {
                     let trace =
                         trace_level_curve(phase, cfg, saddle.z, saddle.big_h(), Some(dir), true)?;
                     match trace.stop {
                         Stop::CrossedReal => {
-                            effective = true;
-                            break;
+                            multiplicity += crossing_orientation(dir, trace.end_tangent, d_desc);
                         }
                         Stop::Escaped => {}
                         // Inconclusive ascent: count the saddle out but
@@ -402,7 +503,7 @@ impl<'a> ThimbleSolver<'a> {
                         Stop::MorseFloor => unreachable!("ascending trace"),
                     }
                 }
-                if !effective {
+                if multiplicity == 0 {
                     continue;
                 }
             }
@@ -431,8 +532,9 @@ impl<'a> ThimbleSolver<'a> {
 
             let (p_hi, p_lo) =
                 integrate_polyline(phase, cfg.omega, &piece, &|_| Complex64::new(1.0, 0.0));
-            hi += p_hi;
-            lo += p_lo;
+            let m = Complex64::from(multiplicity as f64);
+            hi += p_hi * m;
+            lo += p_lo * m;
             self.pieces.push(piece);
         }
 
@@ -457,6 +559,7 @@ pub(crate) fn solve_half_line(
     phase: &dyn Phase<1>,
     cfg: &ThimbleConfig,
     amplitude: &dyn Fn(Complex64) -> Complex64,
+    given_saddles: Option<&[Saddle]>,
 ) -> Result<Output> {
     if !(cfg.omega > 0.0) {
         return Err(Error::InvalidInput("omega must be > 0"));
@@ -465,6 +568,21 @@ pub(crate) fn solve_half_line(
     let mut hi = Complex64::new(0.0, 0.0);
     let mut lo = Complex64::new(0.0, 0.0);
     let mut extra_err = 0.0;
+
+    // Saddles first (injected by the caller — e.g. the polar wrapper's
+    // per-theta polynomial source — or grid-Newton), so the trace window
+    // can be extended around them before anything is traced.
+    let saddles: Vec<Saddle> = match given_saddles {
+        Some(s) => s.to_vec(),
+        None => find_saddles(
+            phase,
+            cfg.re_range,
+            cfg.im_range,
+            cfg.seeds_per_axis,
+            cfg.newton_tol,
+        ),
+    };
+    let cfg = &extend_window(cfg, &saddles);
 
     // (i) The endpoint piece, traversed from 0 outwards/downwards.
     let target0 = val(phase, origin).re;
@@ -500,13 +618,6 @@ pub(crate) fn solve_half_line(
     lo += p_lo;
 
     // (ii) Thimbles of the effective saddles on the positive half-plane.
-    let saddles = find_saddles(
-        phase,
-        cfg.re_range,
-        cfg.im_range,
-        cfg.seeds_per_axis,
-        cfg.newton_tol,
-    );
     for saddle in &saddles {
         if saddle.z.norm() < 1e-6 {
             continue; // the endpoint logic above owns the origin
@@ -519,17 +630,18 @@ pub(crate) fn solve_half_line(
             continue;
         }
         let d_desc = take_off_direction(saddle.second);
+        // Signed multiplicity, as in the full-line solver, but counting
+        // only ascent crossings of the *positive* axis.
+        let mut multiplicity: i32 = if is_real { 1 } else { 0 };
         if !is_real {
             let d_asc = d_desc * Complex64::i();
-            let mut effective = false;
             for dir in [d_asc, -d_asc] {
                 let trace =
                     trace_level_curve(phase, cfg, saddle.z, saddle.big_h(), Some(dir), true)?;
                 match trace.stop {
                     Stop::CrossedReal => {
                         if trace.crossing_re.unwrap_or(f64::NEG_INFINITY) > 0.0 {
-                            effective = true;
-                            break;
+                            multiplicity += crossing_orientation(dir, trace.end_tangent, d_desc);
                         }
                     }
                     Stop::Escaped => {}
@@ -539,7 +651,7 @@ pub(crate) fn solve_half_line(
                     Stop::MorseFloor => unreachable!("ascending trace"),
                 }
             }
-            if !effective {
+            if multiplicity == 0 {
                 continue;
             }
         }
@@ -559,8 +671,9 @@ pub(crate) fn solve_half_line(
         piece.push(saddle.z);
         piece.extend(&plus.points);
         let (p_hi, p_lo) = integrate_polyline(phase, cfg.omega, &piece, amplitude);
-        hi += p_hi;
-        lo += p_lo;
+        let m = Complex64::from(multiplicity as f64);
+        hi += p_hi * m;
+        lo += p_lo * m;
     }
 
     Ok(Output {

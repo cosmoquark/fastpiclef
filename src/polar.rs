@@ -18,8 +18,9 @@
 //! saddle escapes to infinity as $\cos\theta \to 0$) are not suitable for
 //! the polar decomposition.
 
+use crate::saddles::saddles_from_polynomial;
 use crate::thimble::{ThimbleConfig, solve_half_line};
-use crate::{Error, Output, Phase, Result};
+use crate::{Error, Output, Phase, RationalPhase2D, Result};
 use nalgebra::SVector;
 use num_complex::Complex64;
 use std::f64::consts::TAU;
@@ -76,9 +77,16 @@ impl<'a> Phase<1> for RadialPhase<'a> {
 
 /// 2D Fresnel-integral solver: polar decomposition into radial
 /// constant-phase contour solves.
+///
+/// Construct with [`PolarSolver::new`] for a general analytic phase, or
+/// with [`PolarSolver::new_rational`] for a [`RationalPhase2D`] — then each
+/// radial solve uses the complete per-angle polynomial saddle source
+/// (required for multi-image lenses, and much cheaper than the per-angle
+/// grid-Newton search).
 pub struct PolarSolver<'a> {
     phase: &'a dyn Phase<2>,
     cfg: PolarConfig,
+    rational: Option<&'a dyn RationalPhase2D>,
     thetas_used: usize,
 }
 
@@ -87,6 +95,19 @@ impl<'a> PolarSolver<'a> {
         Self {
             phase,
             cfg,
+            rational: None,
+            thetas_used: 0,
+        }
+    }
+
+    /// Like [`PolarSolver::new`], but the radial saddles at each angle come
+    /// from the phase's declared radial polynomial (complete by
+    /// construction).
+    pub fn new_rational<P: RationalPhase2D>(phase: &'a P, cfg: PolarConfig) -> Self {
+        Self {
+            phase,
+            cfg,
+            rational: Some(phase),
             thetas_used: 0,
         }
     }
@@ -102,14 +123,24 @@ impl<'a> PolarSolver<'a> {
             return Err(Error::InvalidInput("theta_init must be >= 2"));
         }
         let phase = self.phase;
+        let rational = self.rational;
         let cfg = &self.cfg;
         let eval = |theta: f64| -> Result<Output> {
+            let (cos_t, sin_t) = (theta.cos(), theta.sin());
             let radial = RadialPhase {
                 phase,
-                cos_t: theta.cos(),
-                sin_t: theta.sin(),
+                cos_t,
+                sin_t,
             };
-            solve_half_line(&radial, &cfg.radial, &|r| r)
+            let injected = match rational {
+                Some(rp) => Some(saddles_from_polynomial(
+                    &radial,
+                    &rp.radial_stationary_polynomial(cos_t, sin_t),
+                    cfg.radial.newton_tol,
+                )?),
+                None => None,
+            };
+            solve_half_line(&radial, &cfg.radial, &|r| r, injected.as_deref())
         };
 
         // Periodic trapezoid = mean over a uniform grid; doubling adds the
