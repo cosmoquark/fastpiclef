@@ -10,9 +10,73 @@
 
 use crate::Phase;
 use crate::phase::{RationalPhase, RationalPhase2D};
-use crate::roots::{poly_add, poly_derivative, poly_mul, poly_roots, poly_scale};
+use crate::roots::{poly_add, poly_derivative, poly_eval, poly_mul, poly_roots, poly_scale};
 use nalgebra::SVector;
 use num_complex::Complex64;
+
+/// The bare-quadratic + rational-potential lens with *user-supplied*
+/// coefficients: $\phi(z) = \tfrac12 (z-\beta)^2 - \kappa\,A(z)/B(z)$, where
+/// $A$ (`num`) and $B$ (`den`) are polynomials given in ascending order.
+///
+/// This is the escape hatch for defining new 1D rational lenses without a
+/// per-evaluation callback — value, gradient, the complete stationary
+/// polynomial, and the poles are all assembled from `A, B` with the
+/// polynomial utilities in [`crate::roots`], so the full [`RationalPhase`]
+/// machinery (Durand-Kerner saddles, thimble tracer) applies unchanged. A
+/// constant `den = [1]` gives a polynomial potential (no poles).
+#[derive(Clone)]
+pub struct CustomRationalLens {
+    pub beta: f64,
+    pub kappa: f64,
+    /// Potential numerator $A$, ascending coefficients.
+    pub num: Vec<Complex64>,
+    /// Potential denominator $B$, ascending coefficients (`[1]` ⇒ polynomial).
+    pub den: Vec<Complex64>,
+}
+
+impl Phase<1> for CustomRationalLens {
+    fn value(&self, z: &SVector<Complex64, 1>) -> Complex64 {
+        let z = z[0];
+        let u = z - self.beta;
+        0.5 * u * u - self.kappa * poly_eval(&self.num, z) / poly_eval(&self.den, z)
+    }
+
+    fn gradient(&self, z: &SVector<Complex64, 1>) -> SVector<Complex64, 1> {
+        let z = z[0];
+        let a = poly_eval(&self.num, z);
+        let b = poly_eval(&self.den, z);
+        let da = poly_eval(&poly_derivative(&self.num), z);
+        let db = poly_eval(&poly_derivative(&self.den), z);
+        // d/dz [-kappa A/B] = -kappa (A'B - A B') / B^2
+        SVector::<Complex64, 1>::new((z - self.beta) - self.kappa * (da * b - a * db) / (b * b))
+    }
+}
+
+impl RationalPhase for CustomRationalLens {
+    /// $N = (z-\beta) B^2 - \kappa (A'B - A B')$, from clearing $B^2$ out of
+    /// $\phi'(z) = 0$.
+    fn stationary_polynomial(&self) -> Vec<Complex64> {
+        let a = &self.num;
+        let b = &self.den;
+        let da = poly_derivative(a);
+        let db = poly_derivative(b);
+        let b2 = poly_mul(b, b);
+        let zmb = [Complex64::from(-self.beta), Complex64::from(1.0)];
+        let cross = poly_add(&poly_mul(&da, b), &poly_scale(&poly_mul(a, &db), Complex64::from(-1.0)));
+        poly_add(
+            &poly_mul(&zmb, &b2),
+            &poly_scale(&cross, Complex64::from(-self.kappa)),
+        )
+    }
+
+    fn poles(&self) -> Vec<Complex64> {
+        if self.den.len() <= 1 {
+            Vec::new()
+        } else {
+            poly_roots(&self.den).unwrap_or_default()
+        }
+    }
+}
 
 /// Cubic ("Airy") phase in one dimension:
 /// $\phi(z; y) = z^3/3 - y z$.
@@ -260,6 +324,60 @@ impl RationalPhase for SimGLens {
     }
 }
 
+/// A field of point-mass lenses in the 2D lensing plane — the microlensing
+/// / stellar-field problem.
+///
+/// The Fermat phase is the holomorphic continuation of
+/// $\phi(\mathbf{x}) = \tfrac12 |\mathbf{x} - \boldsymbol\beta|^2
+///   - \sum_j m_j \ln|\mathbf{x} - \mathbf{x}_j|$
+/// (each point mass $j$ contributes a logarithmic lensing potential, with
+/// $m_j$ its mass in Einstein-radius$^2$ units), obtained by writing
+/// $|\mathbf{x} - \mathbf{x}_j|^2$ as the *holomorphic* quadratic form
+/// $w_j = (z_0 - a_j)^2 + (z_1 - b_j)^2$ and $\ln|\cdot| = \tfrac12 \ln w_j$:
+/// $$ \phi(\mathbf{z}) = \tfrac12\big[(z_0-\beta_0)^2 + (z_1-\beta_1)^2\big]
+///    - \sum_j \tfrac{m_j}{2}\,\ln w_j. $$
+///
+/// The field is generally **not axisymmetric**, so only the general
+/// mesh-flow [`crate::Solver`]`<2>` applies — the polar wrapper does not.
+/// The logarithm's branch points lie on the complex variety $w_j = 0$, off
+/// the real plane (where $\phi$ is real and $h = 0$); the mesh flow's
+/// $h$-monotonicity guard keeps the deforming contour from tunnelling across
+/// them, exactly as it does for the rational lens's poles.
+pub struct PointMassField {
+    /// Source position $\boldsymbol\beta$.
+    pub beta: [f64; 2],
+    /// Each lens as `(x, y, mass)`.
+    pub lenses: Vec<(f64, f64, f64)>,
+}
+
+impl Phase<2> for PointMassField {
+    fn value(&self, z: &SVector<Complex64, 2>) -> Complex64 {
+        let u = z[0] - self.beta[0];
+        let v = z[1] - self.beta[1];
+        let mut acc = 0.5 * (u * u + v * v);
+        for &(a, b, m) in &self.lenses {
+            let du = z[0] - a;
+            let dv = z[1] - b;
+            let w = du * du + dv * dv;
+            acc -= 0.5 * m * w.ln();
+        }
+        acc
+    }
+
+    fn gradient(&self, z: &SVector<Complex64, 2>) -> SVector<Complex64, 2> {
+        let mut g0 = z[0] - self.beta[0];
+        let mut g1 = z[1] - self.beta[1];
+        for &(a, b, m) in &self.lenses {
+            let du = z[0] - a;
+            let dv = z[1] - b;
+            let w = du * du + dv * dv;
+            g0 -= m * du / w;
+            g1 -= m * dv / w;
+        }
+        SVector::<Complex64, 2>::new(g0, g1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,5 +476,71 @@ mod tests {
         check_identity(&phase, &n, &poly_mul(&p, &p));
         // P has 2 kmax zeros = poles of the potential.
         assert_eq!(phase.poles().len(), 8);
+    }
+
+    #[test]
+    fn custom_rational_lens_reproduces_builtin() {
+        // psi = 1/(1+z^2): num = [1], den = [1, 0, 1] — must match RationalLens.
+        let beta = 0.37;
+        let kappa = -0.42;
+        let custom = CustomRationalLens {
+            beta,
+            kappa,
+            num: vec![Complex64::from(1.0)],
+            den: vec![Complex64::from(1.0), Complex64::new(0.0, 0.0), Complex64::from(1.0)],
+        };
+        let builtin = RationalLens { beta, kappa };
+        for z in samples() {
+            let zc = SVector::<Complex64, 1>::new(z);
+            assert!((custom.value(&zc) - builtin.value(&zc)).norm() < 1e-12);
+            assert!((custom.gradient(&zc)[0] - builtin.gradient(&zc)[0]).norm() < 1e-12);
+        }
+        // Same complete saddle set.
+        let sc = crate::saddles::saddles_from_polynomial(&custom, &custom.stationary_polynomial(), 1e-11).unwrap();
+        let sb = crate::saddles::saddles_from_polynomial(&builtin, &builtin.stationary_polynomial(), 1e-11).unwrap();
+        assert_eq!(sc.len(), sb.len());
+        for (a, b) in sc.iter().zip(&sb) {
+            assert!((a.z - b.z).norm() < 1e-9);
+        }
+        assert_eq!(custom.poles().len(), 2);
+    }
+
+    #[test]
+    fn point_mass_field_is_real_on_the_plane_and_reduces_to_free() {
+        let field = PointMassField {
+            beta: [0.3, -0.2],
+            lenses: vec![(1.0, 0.5, 0.4), (-0.8, 0.6, 0.3), (0.2, -1.1, 0.5)],
+        };
+        // Real on the real plane (h = 0 initially), away from the masses.
+        for (x, y) in [(2.0, 1.3), (-1.5, 0.4), (0.0, 2.2)] {
+            let v = field.value(&SVector::<Complex64, 2>::new(
+                Complex64::from(x),
+                Complex64::from(y),
+            ));
+            assert!(v.im.abs() < 1e-12, "phi not real at ({x},{y}): {v}");
+        }
+        // Gradient matches a finite difference of the value (guards the hand
+        // derivative of the log term).
+        let z = SVector::<Complex64, 2>::new(Complex64::new(1.7, 0.3), Complex64::new(-0.4, 0.9));
+        let g = field.gradient(&z);
+        let eps = 1e-6;
+        for k in 0..2 {
+            let mut zp = z;
+            let mut zm = z;
+            zp[k] += Complex64::from(eps);
+            zm[k] += Complex64::from(-eps);
+            let num = (field.value(&zp) - field.value(&zm)) / (2.0 * eps);
+            assert!((g[k] - num).norm() < 1e-5, "grad[{k}] off: {} vs {num}", g[k]);
+        }
+        // Zero masses ⇒ the bare quadratic phase.
+        let free = PointMassField {
+            beta: [0.3, -0.2],
+            lenses: vec![],
+        };
+        let u = Complex64::new(1.4, 0.0);
+        let v = Complex64::new(0.5, 0.0);
+        let got = free.value(&SVector::<Complex64, 2>::new(u, v));
+        let want = 0.5 * ((u - 0.3) * (u - 0.3) + (v + 0.2) * (v + 0.2));
+        assert!((got - want).norm() < 1e-14);
     }
 }
