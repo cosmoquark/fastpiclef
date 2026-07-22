@@ -23,6 +23,9 @@ pub mod saddles;
 pub mod solver;
 pub mod thimble;
 
+#[cfg(feature = "python")]
+mod python;
+
 pub use error::{Error, Result};
 pub use flow::{Flow, Rk4, StepReport};
 pub use mesh::Mesh;

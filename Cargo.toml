@@ -3,12 +3,23 @@ name = "fast_picard_lefshetz_integral_code"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+# `cdylib` for the Python extension module (maturin), `rlib` so the crate is
+# still usable from the demo binary, tests, and benches.
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 nalgebra = "0.33"
 num-complex = "0.4"
 rayon = "1.10"
 seq-macro = "0.3"
 thiserror = "2"
+pyo3 = { version = "0.24", features = ["extension-module", "abi3-py312", "num-complex", "multiple-pymethods"], optional = true }
+
+[features]
+# Off by default: `cargo build`/`test` and the demo binary never touch pyo3.
+# The Python bindings module is gated behind this and built by maturin.
+python = ["dep:pyo3"]
 
 [dev-dependencies]
 approx = "0.5"

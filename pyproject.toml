@@ -1,27 +1,60 @@
 [project]
-name = "fast-picard-lefshetz-integral-code"
+name = "fastpiclef"
 version = "0.1.0"
-description = "Add your description here"
+description = "Fast Picard-Lefschetz Fresnel-integral / wave-optics lensing solver"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-    "plind>=0.1.0",
-]
+dependencies = []
 
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[tool.maturin]
+# Pure-Rust extension (no python source tree); the bindings live behind the
+# crate's `python` feature. `module-name` sets the import name independently
+# of the Rust crate (whose name carries a legacy typo).
+features = ["python"]
+module-name = "fastpiclef"
+
+# --- pixi: a build/comparison env (default) and a `notebook` sub-environment
+# --- that adds Jupyter on top for running notebooks/getting_started.ipynb.
 [tool.pixi.workspace]
 channels = ["conda-forge"]
 platforms = ["linux-64"]
 
-[tool.pixi.pypi-dependencies]
-fast-picard-lefshetz-integral-code = { path = ".", editable = true }
-
-[tool.pixi.tasks]
+[tool.pixi.activation.env]
+# So `maturin develop` works against the env's Python 3.14 (ahead of pyo3 0.24).
+PYO3_USE_ABI3_FORWARD_COMPATIBILITY = "1"
 
 [tool.pixi.dependencies]
-fiona = ">=1.10.1,<2"
 numpy = ">=2.4.6,<3"
+scipy = ">=1.11"
+matplotlib = ">=3.8"
+# NB: this is the geospatial "fiona", NOT the reference FIONA lensing code in
+# refs/FIONA — reconcile before the comparison-harness step (see journal).
+fiona = ">=1.10.1,<2"
+maturin = ">=1.7"
 
-[pypi-dependencies]
+[tool.pixi.pypi-dependencies]
 plind = "*"
 
+# Jupyter tooling lives only in the `notebook` environment.
+[tool.pixi.feature.notebook.dependencies]
+jupyterlab = ">=4"
+ipykernel = ">=6"
+nbconvert = ">=7"
 
+[tool.pixi.environments]
+default = { solve-group = "main" }
+notebook = { features = ["notebook"], solve-group = "main" }
+
+[tool.pixi.tasks]
+# Build/install the extension into the active environment.
+build = "maturin develop --release"
+test-py = { cmd = "python tests/python/test_wrapper.py", depends-on = ["build"] }
+# Run these in the notebook env: `pixi run -e notebook lab`, etc.
+lab = { cmd = "jupyter lab", depends-on = ["build"] }
+execute-notebook = { cmd = "jupyter nbconvert --execute --to notebook --inplace notebooks/getting_started.ipynb", depends-on = [
+    "build",
+] }
