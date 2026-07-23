@@ -8,6 +8,7 @@ use num_complex::Complex64;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
+use crate::images::{geometric_amplification, point_mass_field_images};
 use crate::phases::{
     AiryPhase, CustomRationalLens, PointMass, PointMassField, RationalLens, RationalLens2D,
     SimGLens,
@@ -481,6 +482,28 @@ impl PyPointMassField {
     #[getter]
     fn n(&self) -> usize {
         self.inner.lenses.len()
+    }
+
+    /// The geometric-optics images (real solutions of the lens equation), each
+    /// as `(x1, x2)` (Path 2, M1 — the Witt-Mao polynomial).
+    fn images(&self) -> Vec<(f64, f64)> {
+        point_mass_field_images(self.inner.beta, &self.inner.lenses)
+            .into_iter()
+            .map(|p| (p[0], p[1]))
+            .collect()
+    }
+
+    /// Stationary-phase (geometric-optics) amplification: the sum over images
+    /// `|mu_i|^(1/2) exp(i w phi_i - i pi n_i)`. Fast (O(#images)) and exact as
+    /// `omega -> infinity` away from caustics (Path 2, M2). The `.error` field
+    /// is 0 (this is an asymptotic form, not an error-controlled quadrature).
+    fn geometric(&self, omega: f64) -> PyResult<PyOutput> {
+        if !(omega > 0.0) {
+            return Err(PyValueError::new_err("omega must be > 0"));
+        }
+        let f = geometric_amplification(self.inner.beta, &self.inner.lenses, omega);
+        let integral = f * free_space(2, omega);
+        Ok(make_output(2, omega, integral, 0.0, "geometric", self.inner.lenses.len()))
     }
 
     #[pyo3(signature = (omega, *, method="mesh", delta=None, flow_steps=None, domain=None, quad_order=None))]

@@ -13,6 +13,7 @@
 
 pub mod error;
 pub mod flow;
+pub mod images;
 pub mod mesh;
 pub mod phase;
 pub mod phases;
