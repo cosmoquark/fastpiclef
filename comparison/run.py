@@ -198,6 +198,14 @@ def field_comparison(lenses=None, source=None, w_fiona=None, w_mesh=None, mesh_d
     F_fiona, fiona_t = fiona_driver.fiona_field(lenses, source, w_fiona)
     F_ref_at_mesh, _ = fiona_driver.fiona_field(lenses, source, w_mesh)
 
+    # Path 2 / M2: the stationary-phase (geometric-optics) solver -- fast
+    # (O(#images)), exact as w -> infinity away from caustics. Its high-w
+    # accuracy is anchored by the N=1 Nakamura-Deguchi match.
+    pmf = fpl.PointMassField(lenses=lenses, beta=source)
+    t0 = time.perf_counter()
+    F_geo = np.array([complex(pmf.geometric(float(w)).amplification) for w in w_fiona])
+    geo_t = time.perf_counter() - t0
+
     F_mesh = np.full(w_mesh.size, np.nan, dtype=complex)
     mesh_t = np.full(w_mesh.size, np.nan)
     for i, w in enumerate(w_mesh):
@@ -210,9 +218,11 @@ def field_comparison(lenses=None, source=None, w_fiona=None, w_mesh=None, mesh_d
         except Exception:  # noqa: BLE001  (mesh may fail outright at high w)
             pass
     err_mesh = np.abs(np.abs(F_mesh) - np.abs(F_ref_at_mesh)) / np.abs(F_ref_at_mesh)
+    n_images = len(pmf.images())
     return {
-        "lenses": lenses, "source": source,
+        "lenses": lenses, "source": source, "n_images": n_images,
         "w_fiona": w_fiona, "F_fiona": F_fiona, "fiona_t": fiona_t,
+        "F_geo": F_geo, "geo_t": geo_t,
         "w_mesh": w_mesh, "F_mesh": F_mesh, "F_ref_at_mesh": F_ref_at_mesh,
         "err_mesh": err_mesh, "mesh_t": mesh_t,
     }
@@ -221,13 +231,16 @@ def field_comparison(lenses=None, source=None, w_fiona=None, w_mesh=None, mesh_d
 def plot_field(ax, res):
     ax.plot(res["w_fiona"], np.abs(res["F_fiona"]), "-o", ms=3, color="C1",
             label="FIONA (NUFFT3), all w")
+    ax.plot(res["w_fiona"], np.abs(res["F_geo"]), ":", lw=2, color="C0",
+            label="fastpiclef geometric (M2)")
     ok = res["err_mesh"] < 0.1
     ax.plot(res["w_mesh"][ok], np.abs(res["F_mesh"][ok]), "s", ms=9, color="C2",
             label="fastpiclef mesh (converged)")
     ax.plot(res["w_mesh"][~ok], np.abs(res["F_mesh"][~ok]), "x", ms=11, mew=2.5, color="C3",
             label="fastpiclef mesh (diverged)")
     ax.set(xscale="log", xlabel="frequency  w", ylabel="|F|  amplification",
-           title=f"Field of {len(res['lenses'])} point masses -- mesh vs FIONA (no closed form)")
+           title=f"Field of {res['n_images']} images ({len(res['lenses'])} masses) "
+                 f"-- mesh & geometric vs FIONA")
     ax.legend()
 
 
