@@ -92,9 +92,11 @@ def fiona_point_mass_sweep(y, w_grid, threads=1):
     return F, wall
 
 
-def fiona_field(lenses, y, w_grid, threads=1, soft=0.0):
-    """FIONA F(w, y) over a frequency grid for a *field* of point masses (C2)."""
+def fiona_field(lenses, source, w_grid, threads=1, soft=0.0):
+    """FIONA F(w, y) over a frequency grid for a *field* of point masses (C2).
+    `source` is the 2D source position (y1, y2), matching fastpiclef's `beta`."""
     fiona.set_num_threads(threads)
+    y1, y2 = float(source[0]), float(source[1])
     lens = PointMassFieldLens(lenses, soft=soft)
     solver = fiona.FresnelNUFFT3(
         lens,
@@ -105,7 +107,7 @@ def fiona_field(lenses, y, w_grid, threads=1, soft=0.0):
     )
     w = np.asarray(w_grid, dtype=float)
     t0 = time.perf_counter()
-    F = np.asarray(solver(w, np.array([float(y)]), np.array([0.0]))).reshape(-1)
+    F = np.asarray(solver(w, np.array([y1]), np.array([y2]))).reshape(-1)
     wall = time.perf_counter() - t0
     return F, wall
 

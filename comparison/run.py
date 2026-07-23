@@ -168,6 +168,69 @@ def plot_freq_error(ax, res):
     ax.legend()
 
 
+# A small, well-separated, weak field -- the mesh's most favourable case (the
+# 40-microlens field proper is far beyond it). (x, y, mass) and the 2D source.
+FIELD_LENSES = [(0.6, 0.0, 0.4), (-0.5, 0.4, 0.3), (0.1, -0.6, 0.35)]
+FIELD_SOURCE = (0.2, 0.1)
+
+
+def field_comparison(lenses=None, source=None, w_fiona=None, w_mesh=None, mesh_delta=0.03):
+    """Phase 3 / C2 -- the genuinely 2D field of point masses (non-axisymmetric,
+    no closed form). FIONA (NUFFT3) handles all w robustly; our only field path
+    is the mesh (the polar/thimble fast path needs axisymmetry, which the field
+    lacks). Trust is calibrated by C1 (both codes machine-checked against the
+    point-mass closed form); here FIONA is the reference and we measure where the
+    mesh can follow it. The mesh diverges above low w -- the evidence for Path 2.
+    """
+    from . import fiona_driver
+
+    if lenses is None:
+        lenses = FIELD_LENSES
+    if source is None:
+        source = FIELD_SOURCE
+    if w_fiona is None:
+        w_fiona = np.geomspace(1.0, 30.0, 12)
+    if w_mesh is None:
+        w_mesh = np.array([1.0, 2.0, 4.0, 8.0])
+    w_fiona = np.asarray(w_fiona, dtype=float)
+    w_mesh = np.asarray(w_mesh, dtype=float)
+
+    F_fiona, fiona_t = fiona_driver.fiona_field(lenses, source, w_fiona)
+    F_ref_at_mesh, _ = fiona_driver.fiona_field(lenses, source, w_mesh)
+
+    F_mesh = np.full(w_mesh.size, np.nan, dtype=complex)
+    mesh_t = np.full(w_mesh.size, np.nan)
+    for i, w in enumerate(w_mesh):
+        try:
+            t0 = time.perf_counter()
+            r = fpl.PointMassField(lenses=lenses, beta=source).solve(
+                omega=float(w), method="mesh", delta=mesh_delta, domain=(-6.0, 6.0))
+            F_mesh[i] = complex(r.amplification)
+            mesh_t[i] = time.perf_counter() - t0
+        except Exception:  # noqa: BLE001  (mesh may fail outright at high w)
+            pass
+    err_mesh = np.abs(np.abs(F_mesh) - np.abs(F_ref_at_mesh)) / np.abs(F_ref_at_mesh)
+    return {
+        "lenses": lenses, "source": source,
+        "w_fiona": w_fiona, "F_fiona": F_fiona, "fiona_t": fiona_t,
+        "w_mesh": w_mesh, "F_mesh": F_mesh, "F_ref_at_mesh": F_ref_at_mesh,
+        "err_mesh": err_mesh, "mesh_t": mesh_t,
+    }
+
+
+def plot_field(ax, res):
+    ax.plot(res["w_fiona"], np.abs(res["F_fiona"]), "-o", ms=3, color="C1",
+            label="FIONA (NUFFT3), all w")
+    ok = res["err_mesh"] < 0.1
+    ax.plot(res["w_mesh"][ok], np.abs(res["F_mesh"][ok]), "s", ms=9, color="C2",
+            label="fastpiclef mesh (converged)")
+    ax.plot(res["w_mesh"][~ok], np.abs(res["F_mesh"][~ok]), "x", ms=11, mew=2.5, color="C3",
+            label="fastpiclef mesh (diverged)")
+    ax.set(xscale="log", xlabel="frequency  w", ylabel="|F|  amplification",
+           title=f"Field of {len(res['lenses'])} point masses -- mesh vs FIONA (no closed form)")
+    ax.legend()
+
+
 def rel(value, truth):
     return abs(value - truth) / abs(truth)
 
