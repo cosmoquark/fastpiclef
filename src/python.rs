@@ -9,12 +9,13 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 use crate::phases::{
-    AiryPhase, CustomRationalLens, PointMassField, RationalLens, RationalLens2D, SimGLens,
+    AiryPhase, CustomRationalLens, PointMass, PointMassField, RationalLens, RationalLens2D,
+    SimGLens,
 };
 use crate::saddles::saddles_from_polynomial;
 use crate::{
     Error, PolarConfig, PolarSolver, RationalPhase, Solver, SolverConfig, ThimbleConfig,
-    ThimbleSolver,
+    ThimbleSolver, solve_point_mass_polar,
 };
 use std::f64::consts::PI;
 
@@ -396,6 +397,66 @@ impl PyRationalLens2D {
     }
 }
 
+/// The isolated point-mass lens (psi = ln r), source at `(y, 0)`. Axisymmetric,
+/// so the fast polar wrapper applies: each angle's radial saddle is the positive
+/// root of `r^2 - b r - 1 = 0` (the point-mass lens equation). Validated against
+/// the Nakamura-Deguchi closed form. `method` in {"polar", "auto", "mesh"}.
+#[pyclass(name = "PointMass")]
+struct PyPointMass {
+    inner: PointMass,
+}
+#[pymethods]
+impl PyPointMass {
+    #[new]
+    fn new(y: f64) -> Self {
+        Self {
+            inner: PointMass { y },
+        }
+    }
+
+    #[pyo3(signature = (omega, *, method="auto", delta=None, flow_steps=None, domain=None, quad_order=None))]
+    fn solve(
+        &self,
+        omega: f64,
+        method: &str,
+        delta: Option<f64>,
+        flow_steps: Option<usize>,
+        domain: Option<(f64, f64)>,
+        quad_order: Option<u32>,
+    ) -> PyResult<PyOutput> {
+        if !(omega > 0.0) {
+            return Err(PyValueError::new_err("omega must be > 0"));
+        }
+        match method {
+            "polar" | "auto" => {
+                // Wide u = ln r window (no branch cut in u, so a generous window
+                // only sharpens the tail; the log cut that stalls the generic
+                // half-line trace lives in r, not u).
+                let cfg = PolarConfig {
+                    radial: ThimbleConfig {
+                        omega,
+                        re_range: (-20.0, 12.0),
+                        im_range: (-20.0, 20.0),
+                        ..ThimbleConfig::default()
+                    },
+                    ..PolarConfig::default()
+                };
+                let (o, n) = solve_point_mass_polar(self.inner.y, &cfg).map_err(map_err)?;
+                Ok(make_output(2, omega, o.value, o.error, "polar", n))
+            }
+            "mesh" => {
+                let cfg = mesh_config_2d(omega, delta, flow_steps, domain, quad_order);
+                let mut s = Solver::<2>::new(&self.inner, cfg);
+                let o = s.run().map_err(map_err)?;
+                Ok(make_output(2, omega, o.value, o.error, "mesh", s.steps_used()))
+            }
+            other => Err(PyValueError::new_err(format!(
+                "unknown method '{other}'; use 'polar', 'mesh', or 'auto'"
+            ))),
+        }
+    }
+}
+
 /// A field of point-mass lenses (the microlensing / stellar-field problem).
 /// `lenses` is a list of `(x, y, mass)`; `beta = (bx, by)` is the source.
 /// Only the general mesh solver applies (non-axisymmetric, log potentials).
@@ -458,6 +519,7 @@ fn fastpiclef(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySimG>()?;
     m.add_class::<PyCustom>()?;
     m.add_class::<PyRationalLens2D>()?;
+    m.add_class::<PyPointMass>()?;
     m.add_class::<PyPointMassField>()?;
     Ok(())
 }

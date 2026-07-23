@@ -30,7 +30,7 @@ pub use error::{Error, Result};
 pub use flow::{Flow, Rk4, StepReport};
 pub use mesh::Mesh;
 pub use phase::{DynPhase, Phase, PhaseAsDyn, RationalPhase, RationalPhase2D, as_dyn};
-pub use polar::{PolarConfig, PolarSolver};
+pub use polar::{PolarConfig, PolarSolver, solve_point_mass_polar};
 pub use quadrature::{GrundmannMoeller, Quadrature};
 pub use roots::poly_roots;
 pub use saddles::{Saddle, find_saddles, saddles_from_polynomial, second_derivative};

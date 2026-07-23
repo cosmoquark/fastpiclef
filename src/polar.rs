@@ -119,61 +119,103 @@ impl<'a> PolarSolver<'a> {
     }
 
     pub fn run(&mut self) -> Result<Output> {
-        if self.cfg.theta_init < 2 {
-            return Err(Error::InvalidInput("theta_init must be >= 2"));
-        }
-        let phase = self.phase;
-        let rational = self.rational;
-        let cfg = &self.cfg;
-        let eval = |theta: f64| -> Result<Output> {
-            let (cos_t, sin_t) = (theta.cos(), theta.sin());
-            let radial = RadialPhase {
-                phase,
-                cos_t,
-                sin_t,
+        let (out, n) = {
+            let phase = self.phase;
+            let rational = self.rational;
+            let cfg = &self.cfg;
+            let eval = |theta: f64| -> Result<Output> {
+                let (cos_t, sin_t) = (theta.cos(), theta.sin());
+                let radial = RadialPhase {
+                    phase,
+                    cos_t,
+                    sin_t,
+                };
+                let injected = match rational {
+                    Some(rp) => Some(saddles_from_polynomial(
+                        &radial,
+                        &rp.radial_stationary_polynomial(cos_t, sin_t),
+                        cfg.radial.newton_tol,
+                    )?),
+                    None => None,
+                };
+                solve_half_line(&radial, &cfg.radial, &|r| r, injected.as_deref())
             };
-            let injected = match rational {
-                Some(rp) => Some(saddles_from_polynomial(
-                    &radial,
-                    &rp.radial_stationary_polynomial(cos_t, sin_t),
-                    cfg.radial.newton_tol,
-                )?),
-                None => None,
-            };
-            solve_half_line(&radial, &cfg.radial, &|r| r, injected.as_deref())
+            integrate_theta(cfg, &eval)?
         };
+        self.thetas_used = n;
+        Ok(out)
+    }
+}
 
-        // Periodic trapezoid = mean over a uniform grid; doubling adds the
-        // midpoints, so every radial solve is reused.
-        let mut n = cfg.theta_init;
-        let mut sum = Complex64::new(0.0, 0.0);
-        let mut radial_err_sum = 0.0;
+/// The periodic-trapezoid $\theta$ integral, doubling (and reusing every
+/// previous radial solve) until the value stabilises. Shared by the generic
+/// [`PolarSolver`] and the dedicated point-mass path
+/// ([`solve_point_mass_polar`]); `eval(theta)` returns that angle's radial
+/// integral $\int_0^\infty r\,e^{i\omega\phi_\theta(r)}\,dr$. Returns the raw
+/// polar integral and the number of $\theta$ points used.
+fn integrate_theta(cfg: &PolarConfig, eval: &dyn Fn(f64) -> Result<Output>) -> Result<(Output, usize)> {
+    if cfg.theta_init < 2 {
+        return Err(Error::InvalidInput("theta_init must be >= 2"));
+    }
+    let mut n = cfg.theta_init;
+    let mut sum = Complex64::new(0.0, 0.0);
+    let mut radial_err_sum = 0.0;
+    for k in 0..n {
+        let out = eval(TAU * k as f64 / n as f64)?;
+        sum += out.value;
+        radial_err_sum += out.error;
+    }
+    let mut value = sum * Complex64::from(TAU / n as f64);
+    let mut delta = f64::INFINITY;
+    while n < cfg.theta_max {
         for k in 0..n {
-            let out = eval(TAU * k as f64 / n as f64)?;
+            let out = eval(TAU * (k as f64 + 0.5) / n as f64)?;
             sum += out.value;
             radial_err_sum += out.error;
         }
-        let mut value = sum * Complex64::from(TAU / n as f64);
-        let mut delta = f64::INFINITY;
-        while n < cfg.theta_max {
-            for k in 0..n {
-                let out = eval(TAU * (k as f64 + 0.5) / n as f64)?;
-                sum += out.value;
-                radial_err_sum += out.error;
-            }
-            n *= 2;
-            let refined = sum * Complex64::from(TAU / n as f64);
-            delta = (refined - value).norm();
-            value = refined;
-            if delta <= cfg.theta_tol * value.norm() {
-                break;
-            }
+        n *= 2;
+        let refined = sum * Complex64::from(TAU / n as f64);
+        delta = (refined - value).norm();
+        value = refined;
+        if delta <= cfg.theta_tol * value.norm() {
+            break;
         }
-        self.thetas_used = n;
-
-        Ok(Output {
+    }
+    Ok((
+        Output {
             value,
             error: delta + radial_err_sum * TAU / n as f64,
-        })
-    }
+        },
+        n,
+    ))
+}
+
+/// Raw polar amplification integral for the isolated point mass $\psi = \ln r$
+/// with source at $(y, 0)$:
+/// $\int_0^{2\pi}\!\!\int_0^\infty e^{i\omega\phi}\,r\,dr\,d\theta$, using the
+/// branch-cut-free $r = e^u$ radial solve ([`crate::thimble::point_mass_radial`])
+/// per angle. The two images are the positive radial saddle at $\theta$ and at
+/// $\theta + \pi$ over the full sweep. Returns the raw integral and the number
+/// of $\theta$ points used. (The generic [`PolarSolver`] cannot serve this lens:
+/// its per-angle `solve_half_line` trace stalls on the $\ln$ branch cut.)
+pub fn solve_point_mass_polar(y: f64, cfg: &PolarConfig) -> Result<(Output, usize)> {
+    // The u = ln r window must contain each per-angle thimble down to the Morse
+    // floor. On the u -> -inf (r -> 0) valley the height falls only linearly
+    // (Im Psi ~ -Im u), so the needed half-extent grows like
+    // |morse_threshold| / omega; too tight a window truncates the radial tails
+    // theta-dependently and destroys the theta-trapezoid's spectral convergence
+    // (the loop then runs to theta_max). Re u stays bounded (both valleys), so
+    // its positive side is capped to keep exp(2u) well within range.
+    let half = cfg.radial.morse_threshold.abs() / cfg.radial.omega + 15.0;
+    let mut radial = cfg.radial.clone();
+    radial.re_range = (-half, 20.0);
+    radial.im_range = (-half, half);
+    let cfg = PolarConfig {
+        radial,
+        ..cfg.clone()
+    };
+    let eval = |theta: f64| -> Result<Output> {
+        crate::thimble::point_mass_radial(y, theta.cos(), &cfg.radial)
+    };
+    integrate_theta(&cfg, &eval)
 }

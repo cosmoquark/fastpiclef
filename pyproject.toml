@@ -49,6 +49,10 @@ cxx-compiler = "*"
 numexpr = "*"
 psutil = "*"
 pandas = "*"
+# FIONA's fast 2D solver (FresnelNUFFT3) back-end. Its compiled Hankel
+# extension (_pynufht) is not shipped in refs/, so we benchmark the NUFFT path.
+finufft = "*"
+mpmath = "*"
 
 [tool.pixi.feature.comparison.pypi-dependencies]
 plind = "*"

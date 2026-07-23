@@ -39,6 +39,7 @@
 
 use crate::saddles::{Saddle, find_saddles, grad, saddles_from_polynomial, second_derivative, val};
 use crate::{Error, Output, Phase, RationalPhase, Result, Solver, SolverConfig};
+use nalgebra::SVector;
 use num_complex::Complex64;
 
 /// Knobs for the constant-phase contour pipeline.
@@ -584,38 +585,48 @@ pub(crate) fn solve_half_line(
     };
     let cfg = &extend_window(cfg, &saddles);
 
-    // (i) The endpoint piece, traversed from 0 outwards/downwards.
-    let target0 = val(phase, origin).re;
+    // (i) The endpoint piece, traversed from 0 outwards/downwards. Skipped when
+    // the origin is a singularity of the phase (e.g. the point-mass log branch
+    // point psi = ln r, where phi -> +inf): there the polar integrand
+    // ~ r^{1-i*omega} vanishes, so the lower limit contributes nothing and the
+    // saddle thimble(s) below carry the whole half-line integral. (For a regular
+    // phase the origin is an ordinary endpoint whose contour must be included.)
+    let v0 = val(phase, origin);
     let g0 = grad(phase, origin);
-    let endpoint_is_saddle = g0.norm() < 1e-7;
-    let endpoint = if endpoint_is_saddle {
-        let phi2 = second_derivative(phase, origin);
-        if phi2.norm() < 10.0 * cfg.newton_tol.sqrt() {
-            return Err(Error::DegenerateSaddle);
+    let origin_regular =
+        v0.re.is_finite() && v0.im.is_finite() && g0.re.is_finite() && g0.im.is_finite();
+    if origin_regular {
+        let target0 = v0.re;
+        let endpoint_is_saddle = g0.norm() < 1e-7;
+        let endpoint = if endpoint_is_saddle {
+            let phi2 = second_derivative(phase, origin);
+            if phi2.norm() < 10.0 * cfg.newton_tol.sqrt() {
+                return Err(Error::DegenerateSaddle);
+            }
+            trace_level_curve(
+                phase,
+                cfg,
+                origin,
+                target0,
+                Some(take_off_direction(phi2)),
+                false,
+            )?
+        } else {
+            trace_level_curve(phase, cfg, origin, target0, None, false)?
+        };
+        if endpoint.stop != Stop::MorseFloor {
+            extra_err += endpoint.end_omega_h.exp();
         }
-        trace_level_curve(
-            phase,
-            cfg,
-            origin,
-            target0,
-            Some(take_off_direction(phi2)),
-            false,
-        )?
-    } else {
-        trace_level_curve(phase, cfg, origin, target0, None, false)?
-    };
-    if endpoint.stop != Stop::MorseFloor {
-        extra_err += endpoint.end_omega_h.exp();
+        let mut piece: Vec<Complex64> = if endpoint_is_saddle {
+            vec![origin]
+        } else {
+            Vec::new()
+        };
+        piece.extend(&endpoint.points);
+        let (p_hi, p_lo) = integrate_polyline(phase, cfg.omega, &piece, amplitude);
+        hi += p_hi;
+        lo += p_lo;
     }
-    let mut piece: Vec<Complex64> = if endpoint_is_saddle {
-        vec![origin]
-    } else {
-        Vec::new()
-    };
-    piece.extend(&endpoint.points);
-    let (p_hi, p_lo) = integrate_polyline(phase, cfg.omega, &piece, amplitude);
-    hi += p_hi;
-    lo += p_lo;
 
     // (ii) Thimbles of the effective saddles on the positive half-plane.
     for saddle in &saddles {
@@ -676,6 +687,143 @@ pub(crate) fn solve_half_line(
         lo += p_lo * m;
     }
 
+    Ok(Output {
+        value: hi,
+        error: (hi - lo).norm() + extra_err,
+    })
+}
+
+/// Radial phase of the isolated point mass after the substitution $r = e^u$,
+/// which maps the half-line $(0, \infty)$ to the full line and unwraps the
+/// logarithmic branch point at $r = 0$ (to $u \to -\infty$), leaving an
+/// *entire* phase — no branch cut for the trace to stall on:
+/// $\Psi(u) = \tfrac12 e^{2u} - b\,e^u + \tfrac12 y^2 - u$, with
+/// $b = y\cos\theta$. The radial integral
+/// $\int_0^\infty e^{i\omega\phi_\theta(r)}\,r\,dr$ then equals
+/// $\int_{\mathbb R} e^{i\omega\Psi(u)}\,e^{2u}\,du$ (the $e^{2u}$ is the
+/// $r\,dr$ Jacobian, carried as the quadrature amplitude).
+struct PointMassRadialU {
+    b: f64,
+    half_y2: f64,
+}
+
+impl Phase<1> for PointMassRadialU {
+    fn value(&self, u: &SVector<Complex64, 1>) -> Complex64 {
+        let e = u[0].exp();
+        0.5 * e * e - self.b * e + self.half_y2 - u[0]
+    }
+
+    fn gradient(&self, u: &SVector<Complex64, 1>) -> SVector<Complex64, 1> {
+        let e = u[0].exp();
+        SVector::<Complex64, 1>::new(e * e - self.b * e - Complex64::from(1.0))
+    }
+}
+
+/// Radial integral $\int_0^\infty e^{i\omega\phi_\theta(r)}\,r\,dr$ for the
+/// isolated point mass at impact parameter `y` and angle with `cos_t`, via the
+/// branch-cut-free $r = e^u$ substitution ([`PointMassRadialU`]). Robust at all
+/// $\omega$, unlike the direct [`solve_half_line`] trace, which crosses the
+/// $\ln$ cut on the imaginary $r$-axis (and stalls on the $\mathrm{Im}\,\phi$
+/// jump there) at low $\omega$. The single real $u$-saddle is $u_s = \ln r_+$
+/// with $r_+ = (b + \sqrt{b^2 + 4})/2 > 0$ the positive image; the negative
+/// image belongs to the $\theta + \pi$ radial problem. This is the reusable
+/// log-thimble kernel earmarked for a future general 2D solver.
+pub(crate) fn point_mass_radial(y: f64, cos_t: f64, cfg: &ThimbleConfig) -> Result<Output> {
+    let b = y * cos_t;
+    let phase = PointMassRadialU {
+        b,
+        half_y2: 0.5 * y * y,
+    };
+    let amplitude = |u: Complex64| (2.0 * u).exp();
+
+    // Psi'(u) = e^{2u} - b e^u - 1 vanishes where e^u = rho, rho = (b +- sqrt(b^2+4))/2.
+    // rho_+ > 0 gives the real saddle u_+ = ln(rho_+) (the bright image); rho_- < 0
+    // gives the conjugate pair u_- = ln|rho_-| +- i*pi. The u_- saddles are
+    // sub-dominant (larger Im Psi) and exponentially suppressed at large omega
+    // -- negligible in the geometric-optics regime, but their contribution is
+    // needed at low omega. (Nearest copies only; the e^u periodicity puts the
+    // rest at Im = +-2*pi, past intervening valleys.)
+    let disc = (b * b + 4.0).sqrt();
+    let ln_abs_rho_minus = (0.5 * (disc - b)).ln(); // ln|rho_-|
+    let mk = |u: Complex64| -> Saddle {
+        Saddle {
+            z: u,
+            value: val(&phase, u),
+            second: second_derivative(&phase, u),
+        }
+    };
+    let saddles = [
+        mk(Complex64::from((0.5 * (b + disc)).ln())),
+        mk(Complex64::new(ln_abs_rho_minus, std::f64::consts::PI)),
+        mk(Complex64::new(ln_abs_rho_minus, -std::f64::consts::PI)),
+    ];
+    integrate_thimbles(&phase, cfg, &amplitude, &saddles)
+}
+
+/// Integrate `int_R amplitude(u) e^{i omega phi(u)} du` over the thimbles of the
+/// given (analytically known) saddles, with the standard effectiveness /
+/// multiplicity bookkeeping: a real saddle sits on the contour and is crossed
+/// once; a complex saddle enters once per signed ascent crossing of R (opposite
+/// orientations cancel), and one already below the Morse floor is budgeted and
+/// skipped. The full-line counterpart of [`solve_half_line`], used where the
+/// complete saddle set is supplied rather than found (the point-mass u-phase).
+fn integrate_thimbles(
+    phase: &dyn Phase<1>,
+    cfg: &ThimbleConfig,
+    amplitude: &dyn Fn(Complex64) -> Complex64,
+    saddles: &[Saddle],
+) -> Result<Output> {
+    let cfg = &extend_window(cfg, saddles);
+    let mut hi = Complex64::new(0.0, 0.0);
+    let mut lo = Complex64::new(0.0, 0.0);
+    let mut extra_err = 0.0;
+    for saddle in saddles {
+        if saddle.second.norm() < 10.0 * cfg.newton_tol.sqrt() {
+            return Err(Error::DegenerateSaddle);
+        }
+        let is_real = saddle.z.im.abs() < 1e-9 * (1.0 + saddle.z.norm());
+        let d_desc = take_off_direction(saddle.second);
+        let mut multiplicity: i32 = if is_real { 1 } else { 0 };
+        if !is_real {
+            let d_asc = d_desc * Complex64::i();
+            for dir in [d_asc, -d_asc] {
+                let trace =
+                    trace_level_curve(phase, cfg, saddle.z, saddle.big_h(), Some(dir), true)?;
+                match trace.stop {
+                    Stop::CrossedReal => {
+                        multiplicity += crossing_orientation(dir, trace.end_tangent, d_desc);
+                    }
+                    Stop::Escaped => {}
+                    Stop::WindowExit | Stop::StepCap => {
+                        extra_err += (cfg.omega * saddle.h()).exp();
+                    }
+                    Stop::MorseFloor => unreachable!("ascending trace"),
+                }
+            }
+            if multiplicity == 0 {
+                continue;
+            }
+        }
+        if cfg.omega * saddle.h() < cfg.morse_threshold {
+            extra_err += (cfg.omega * saddle.h()).exp();
+            continue;
+        }
+
+        let plus = trace_level_curve(phase, cfg, saddle.z, saddle.big_h(), Some(d_desc), false)?;
+        let minus = trace_level_curve(phase, cfg, saddle.z, saddle.big_h(), Some(-d_desc), false)?;
+        for t in [&plus, &minus] {
+            if t.stop != Stop::MorseFloor {
+                extra_err += t.end_omega_h.exp();
+            }
+        }
+        let mut piece: Vec<Complex64> = minus.points.iter().rev().copied().collect();
+        piece.push(saddle.z);
+        piece.extend(&plus.points);
+        let (p_hi, p_lo) = integrate_polyline(phase, cfg.omega, &piece, amplitude);
+        let m = Complex64::from(multiplicity as f64);
+        hi += p_hi * m;
+        lo += p_lo * m;
+    }
     Ok(Output {
         value: hi,
         error: (hi - lo).norm() + extra_err,

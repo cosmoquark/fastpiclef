@@ -378,6 +378,44 @@ impl Phase<2> for PointMassField {
     }
 }
 
+/// The isolated point-mass lens, axisymmetric and holomorphically continued:
+/// with $s = z_0^2 + z_1^2$ (so $s = r^2$ along any ray from the origin),
+/// $\phi(\mathbf{z}) = \tfrac12[(z_0 - y)^2 + z_1^2] - \tfrac12 \ln s$ — the
+/// Fermat potential $\tfrac12|\mathbf{x} - \mathbf{y}|^2 - \ln|\mathbf{x}|$ of a
+/// unit point mass ($\psi = \ln r$) with the source at $(y, 0)$.
+///
+/// Unlike the rational lenses, this potential has a **logarithmic branch point**
+/// at the origin (not a pole): along a ray the radial restriction is
+/// $\phi_\theta(r) = \tfrac12 r^2 - b r + \tfrac12 y^2 - \ln r$ with
+/// $b = y\cos\theta$, and the integrand carries an $r^{-i\omega}$ factor whose
+/// cut is the imaginary $r$-axis — which stalls a direct half-line trace at low
+/// $\omega$. The fast path ([`crate::solve_point_mass_polar`]) instead solves
+/// each ray in $u = \ln r$, where the phase is entire (no cut) and the radial
+/// saddles are $u = \ln\rho$ with $\rho$ the roots of the point-mass lens
+/// equation $\rho^2 - b\rho - 1 = 0$. This is the axisymmetric counterpart to
+/// [`PointMassField`] that the fast solver can handle (the field itself is
+/// non-axisymmetric — mesh only), validated against the Nakamura closed form.
+/// The complex-`ln` value/gradient here is the reusable kernel for a future
+/// general 2D log-thimble.
+pub struct PointMass {
+    /// Source impact parameter $y$ (source at $(y, 0)$, lens at the origin).
+    pub y: f64,
+}
+
+impl Phase<2> for PointMass {
+    fn value(&self, z: &SVector<Complex64, 2>) -> Complex64 {
+        let u = z[0] - self.y;
+        let v = z[1];
+        let s = z[0] * z[0] + z[1] * z[1];
+        0.5 * (u * u + v * v) - 0.5 * s.ln()
+    }
+
+    fn gradient(&self, z: &SVector<Complex64, 2>) -> SVector<Complex64, 2> {
+        let s = z[0] * z[0] + z[1] * z[1];
+        SVector::<Complex64, 2>::new((z[0] - self.y) - z[0] / s, z[1] - z[1] / s)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

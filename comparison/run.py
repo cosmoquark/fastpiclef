@@ -106,6 +106,68 @@ def plot_grid_error(ax, res):
     ax.legend()
 
 
+def freq_comparison(y=1.0, w_grid=None, fiona_threads=None):
+    """Phase 3 / C1 -- FIONA's native frequency-sweep protocol on the isolated
+    point mass psi = ln r. BOTH codes are graded against the Nakamura-Deguchi
+    closed form (external truth -- no circularity). The story is the high-w tail:
+    the thimble stays O(1) and machine-precise while FIONA's node count (hence
+    cost) grows and its accuracy degrades.
+    """
+    from . import fiona_driver
+    from .referee import point_mass_exact
+
+    if w_grid is None:
+        w_grid = np.geomspace(0.5, 30.0, 16)
+    w_grid = np.asarray(w_grid, dtype=float)
+
+    F_nd = np.array([point_mass_exact(w, y) for w in w_grid])
+
+    # fastpiclef: independent per-frequency polar solves (no warm-start).
+    t0 = time.perf_counter()
+    F_fpl = np.array(
+        [complex(fpl.PointMass(y).solve(omega=float(w), method="polar").amplification)
+         for w in w_grid]
+    )
+    fpl_t = time.perf_counter() - t0
+
+    # FIONA: adaptive NUFFT3 batched over the grid (its native fast mode).
+    F_fiona, fiona_t = fiona_driver.fiona_point_mass_sweep(y, w_grid, threads=1)
+
+    err_fpl = np.abs(np.abs(F_fpl) - np.abs(F_nd)) / np.abs(F_nd)
+    err_fiona = np.abs(np.abs(F_fiona) - np.abs(F_nd)) / np.abs(F_nd)
+    times = {
+        f"fastpiclef ({w_grid.size} w, 1 thr)": fpl_t,
+        f"FIONA ({w_grid.size} w, 1 thr)": fiona_t,
+    }
+    if fiona_threads and fiona_threads > 1:
+        _, fiona_tN = fiona_driver.fiona_point_mass_sweep(y, w_grid, threads=fiona_threads)
+        times[f"FIONA ({w_grid.size} w, {fiona_threads} thr)"] = fiona_tN
+    return {
+        "y": y, "w": w_grid,
+        "F_fpl": F_fpl, "F_fiona": F_fiona, "F_nd": F_nd,
+        "err_fpl": err_fpl, "err_fiona": err_fiona, "times": times,
+    }
+
+
+def plot_freq_overlay(ax, res):
+    w = res["w"]
+    ax.plot(w, np.abs(res["F_nd"]), "k-", lw=2.4, alpha=0.35, label="Nakamura-Deguchi (exact)")
+    ax.plot(w, np.abs(res["F_fpl"]), lw=1.5, label="fastpiclef (thimble)")
+    ax.plot(w, np.abs(res["F_fiona"]), "--", lw=1.2, label="FIONA (NUFFT3)")
+    ax.set(xscale="log", xlabel="frequency  w", ylabel="|F|  amplification",
+           title=f"Point mass |F(w)|, y={res['y']:g} -- 3-way vs the exact closed form")
+    ax.legend()
+
+
+def plot_freq_error(ax, res):
+    w = res["w"]
+    ax.loglog(w, np.maximum(res["err_fpl"], 1e-16), lw=1.6, label="fastpiclef (thimble)")
+    ax.loglog(w, np.maximum(res["err_fiona"], 1e-16), "--", lw=1.2, label="FIONA (NUFFT3)")
+    ax.set(xlabel="frequency  w", ylabel="rel. error in |F| vs exact",
+           title="Accuracy vs the external truth (both codes)")
+    ax.legend()
+
+
 def rel(value, truth):
     return abs(value - truth) / abs(truth)
 
@@ -236,6 +298,23 @@ def main():
     pd.DataFrame(res["times"].items(), columns=["quantity", "seconds"]).to_csv(
         os.path.join(RESULTS, "grid_times.csv"), index=False)
     print(f"  wrote results/grid.png and results/grid_times.csv")
+
+    print("\n== Phase 3 / C1: frequency sweep vs FIONA (point mass, ND truth) ==")
+    fres = freq_comparison(y=1.0)
+    for k, v in fres["times"].items():
+        print(f"  time  {k:<28} {v:.2f} s")
+    hi = fres["w"] >= 10.0
+    print(f"  |F| rel err vs ND (external truth):")
+    print(f"    fastpiclef  median {np.median(fres['err_fpl']):.1e}  (w>=10: {np.median(fres['err_fpl'][hi]):.1e})")
+    print(f"    FIONA       median {np.median(fres['err_fiona']):.1e}  (w>=10: {np.median(fres['err_fiona'][hi]):.1e})")
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(12.5, 4.6))
+    plot_freq_overlay(a1, fres)
+    plot_freq_error(a2, fres)
+    fig.tight_layout()
+    fig.savefig(os.path.join(RESULTS, "freq.png"), dpi=120)
+    pd.DataFrame(fres["times"].items(), columns=["quantity", "seconds"]).to_csv(
+        os.path.join(RESULTS, "freq_times.csv"), index=False)
+    print(f"  wrote results/freq.png and results/freq_times.csv")
 
 
 if __name__ == "__main__":
