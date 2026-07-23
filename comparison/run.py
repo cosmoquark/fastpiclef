@@ -15,13 +15,95 @@ os.environ.setdefault("RAYON_NUM_THREADS", "1")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
+import math
+import time
+
+import numpy as np
 import pandas as pd
 
-from . import drivers
+import fastpiclef as fpl
+
+from . import drivers, plpi_driver
 from .cases import CASES, CONVERGENCE_CASE
 from .metrics import timed
 
 RESULTS = os.path.join(os.path.dirname(__file__), "results")
+
+
+def _normF(integral, omega):
+    """Normalised amplification F = integral / (2*pi*i/omega)^{1/2} (free = 1)."""
+    fs = (2 * math.pi / omega) ** 0.5 * np.exp(1j * math.pi / 4)
+    return np.asarray(integral) / fs
+
+
+def grid_comparison(plind_points=15):
+    """Phase 2 — the (mu)-grid protocol at P-LPI's native benchmark
+    (RationalLens kappa=-2, nu=10). Returns everything the tables/plots need.
+
+    fastpiclef is the truth (validated thimble); P-LPI and plind are graded
+    against it across the grid. plind is subsampled (it is ~2 s/point here) and
+    its full-grid time is extrapolated.
+    """
+    kappa, omega = plpi_driver.PLPI_KAPPA, plpi_driver.PLPI_NU
+    mu, F_plpi_raw, plpi_t1 = plpi_driver.run_plpi_1d(threads=1)
+    _, _, plpi_tN = plpi_driver.run_plpi_1d(threads=os.cpu_count())
+
+    # fastpiclef over the whole grid (independent solves — no warm-start yet).
+    t0 = time.perf_counter()
+    F_fpl_raw = np.array(
+        [complex(fpl.RationalLens(beta=float(m), kappa=kappa)
+                 .solve(omega=omega, method="auto").integral) for m in mu]
+    )
+    fpl_t = time.perf_counter() - t0
+
+    # plind, subsampled; per-point time -> extrapolated grid time.
+    idx = np.linspace(0, len(mu) - 1, plind_points).round().astype(int)
+    phi = lambda z, b: 0.5 * (z - b) ** 2 - kappa / (1 + z * z)
+    dphi = lambda z, b: (z - b) + 2 * kappa * z / (1 + z * z) ** 2
+    F_plind_raw, plind_times = [], []
+    for j in idx:
+        b = float(mu[j])
+        t0 = time.perf_counter()
+        v = drivers.plind_run(lambda z: phi(z, b), lambda z: dphi(z, b), omega, N=2001, delta=0.5)
+        plind_times.append(time.perf_counter() - t0)
+        F_plind_raw.append(v)
+    F_plind_raw = np.array(F_plind_raw)
+
+    err_plpi = np.abs(F_plpi_raw - F_fpl_raw) / np.abs(F_fpl_raw)
+    err_plind = np.abs(F_plind_raw - F_fpl_raw[idx]) / np.abs(F_fpl_raw[idx])
+    plind_per_pt = float(np.median(plind_times))
+    return {
+        "mu": mu, "idx": idx, "omega": omega,
+        "F_fpl": _normF(F_fpl_raw, omega),
+        "F_plpi": _normF(F_plpi_raw, omega),
+        "F_plind": _normF(F_plind_raw, omega),
+        "err_plpi": err_plpi, "err_plind": err_plind,
+        "times": {
+            "fastpiclef (512, 1 thr)": fpl_t,
+            "P-LPI (512, 1 thr)": plpi_t1,
+            f"P-LPI (512, {os.cpu_count()} thr)": plpi_tN,
+            "plind/pt": plind_per_pt,
+            "plind (512, extrapolated)": plind_per_pt * len(mu),
+        },
+    }
+
+
+def plot_grid_overlay(ax, res):
+    mu = res["mu"]
+    ax.plot(mu, np.abs(res["F_fpl"]), lw=1.6, label="fastpiclef (reference)")
+    ax.plot(mu, np.abs(res["F_plpi"]), lw=1, ls="--", label="P-LPI")
+    ax.plot(mu[res["idx"]], np.abs(res["F_plind"]), "o", ms=4, label="plind (subsampled)")
+    ax.set(xlabel="source position  mu", ylabel="|F|  amplification",
+           title=f"Amplification across the grid (kappa=-2, nu={res['omega']:g}) — 3-way agreement")
+    ax.legend()
+
+
+def plot_grid_error(ax, res):
+    ax.semilogy(res["mu"], np.maximum(res["err_plpi"], 1e-16), lw=1, label="P-LPI")
+    ax.semilogy(res["mu"][res["idx"]], np.maximum(res["err_plind"], 1e-16), "o", ms=4, label="plind")
+    ax.set(xlabel="source position  mu", ylabel="rel. error vs fastpiclef thimble",
+           title="Accuracy across the grid", ylim=(1e-9, 1e-1))
+    ax.legend()
 
 
 def rel(value, truth):
@@ -139,6 +221,21 @@ def main():
     fig.savefig(out, dpi=120)
     print(f"  thimble: err={thimble_pt[1]:.2e} at {thimble_pt[0]*1e3:.2f} ms")
     print(f"  wrote {out} and results/summary.{{csv,md}}")
+
+    print("\n== Phase 2: (mu)-grid protocol vs P-LPI (kappa=-2, nu=10) ==")
+    res = grid_comparison()
+    for k, v in res["times"].items():
+        print(f"  time  {k:<32} {v:.3f} s")
+    print(f"  accuracy vs fastpiclef thimble:  P-LPI median {np.median(res['err_plpi']):.1e} "
+          f"max {res['err_plpi'].max():.1e} | plind median {np.median(res['err_plind']):.1e}")
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(12.5, 4.6))
+    plot_grid_overlay(a1, res)
+    plot_grid_error(a2, res)
+    fig.tight_layout()
+    fig.savefig(os.path.join(RESULTS, "grid.png"), dpi=120)
+    pd.DataFrame(res["times"].items(), columns=["quantity", "seconds"]).to_csv(
+        os.path.join(RESULTS, "grid_times.csv"), index=False)
+    print(f"  wrote results/grid.png and results/grid_times.csv")
 
 
 if __name__ == "__main__":
