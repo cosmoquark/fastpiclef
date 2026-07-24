@@ -21,6 +21,7 @@ pub mod polar;
 pub mod quadrature;
 pub mod roots;
 pub mod saddles;
+pub mod slice;
 pub mod solver;
 pub mod thimble;
 
@@ -35,6 +36,7 @@ pub use polar::{PolarConfig, PolarSolver, solve_point_mass_polar};
 pub use quadrature::{GrundmannMoeller, Quadrature};
 pub use roots::poly_roots;
 pub use saddles::{Saddle, find_saddles, saddles_from_polynomial, second_derivative};
+pub use slice::{X1SlicePhase, slice_inner};
 pub use solver::{Output, Solver, SolverConfig};
 pub use thimble::{SolveMethod, ThimbleConfig, ThimbleSolver, solve_1d_hybrid};
 

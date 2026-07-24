@@ -63,6 +63,14 @@ pub struct ThimbleConfig {
     pub morse_threshold: f64,
     /// Frequency in the integrand e^{i omega phi}.
     pub omega: f64,
+    /// Track `phi` by continuation of its (single-valued) gradient along each
+    /// traced contour, instead of evaluating `phase.value` pointwise. Required
+    /// for **multivalued** phases (e.g. the log potential of a point-mass
+    /// slice): there `Re phi` is continuous but `Im phi` jumps by `m*pi` across
+    /// the log branch cuts, which would otherwise stall the tracer (the jump
+    /// trips `max_dh`) and corrupt the quadrature. A no-op for single-valued
+    /// (rational/entire) phases, so it defaults to `false`.
+    pub continuous_phase: bool,
 }
 
 impl Default for ThimbleConfig {
@@ -76,6 +84,7 @@ impl Default for ThimbleConfig {
             max_dh: 1.0,
             morse_threshold: -30.0,
             omega: 1.0,
+            continuous_phase: false,
         }
     }
 }
@@ -193,6 +202,13 @@ fn trace_level_curve(
     let mut last_dir = kick.unwrap_or(Complex64::new(0.0, 0.0));
 
     for _ in 0..20_000 {
+        // Gradient at the current accepted point, for continuous-phase h
+        // tracking (a single evaluation reused across ds-halving retries).
+        let g_z = if cfg.continuous_phase {
+            grad(phase, z)
+        } else {
+            Complex64::new(0.0, 0.0)
+        };
         // Termination on the current point.
         if !ascending && omega_h < cfg.morse_threshold {
             return Ok(Trace {
@@ -256,7 +272,15 @@ fn trace_level_curve(
                 zn -= step;
                 corrected += step.norm();
             }
-            let omega_h_new = omega * (-val(phase, zn).im);
+            // h = -Im phi. For a multivalued phase, evaluating `val` pointwise
+            // makes h jump by `omega*m*pi` across a log cut; instead advance it
+            // by the (single-valued) gradient, dphi = trapezoid(phi') * dz.
+            let omega_h_new = if cfg.continuous_phase {
+                let dphi = (g_z + grad(phase, zn)) * Complex64::from(0.5) * (zn - z);
+                omega_h - omega * dphi.im
+            } else {
+                omega * (-val(phase, zn).im)
+            };
             let rough =
                 !on_level || corrected > 0.2 * ds || (omega_h_new - omega_h).abs() > cfg.max_dh;
             if rough {
@@ -339,19 +363,68 @@ const GL8_W: [f64; 8] = [
 
 /// Integrate amplitude(z) * e^{i omega phi} along a polyline with both
 /// embedded rules.
+///
+/// With `continuous = false`, `phi` is `phase.value` evaluated pointwise. With
+/// `continuous = true` (multivalued phases), `phi` is instead continued along
+/// the polyline from the `anchor` vertex — where `phase.value` is on the
+/// physical branch (the saddle, which sits on the real axis for a real saddle)
+/// — by integrating the single-valued gradient. This keeps `e^{i omega phi}`
+/// on one sheet across the log branch cuts the polyline may cross.
 fn integrate_polyline(
     phase: &dyn Phase<1>,
     omega: f64,
     points: &[Complex64],
     amplitude: &dyn Fn(Complex64) -> Complex64,
+    continuous: bool,
+    anchor: usize,
 ) -> (Complex64, Complex64) {
     let iw = Complex64::new(0.0, omega);
-    let f = |z: Complex64| amplitude(z) * (iw * val(phase, z)).exp();
+    let half_c = Complex64::from(0.5);
+
+    // Line integral of the (single-valued) gradient along the straight segment
+    // [a, b], by the embedded 8-node rule — exact enough that continued `phi`
+    // matches the pointwise value away from cuts.
+    let grad_integral = |a: Complex64, b: Complex64| -> Complex64 {
+        let mid = (a + b) * half_c;
+        let half = (b - a) * half_c;
+        let mut s = Complex64::new(0.0, 0.0);
+        for (x, w) in GL8_X.iter().zip(GL8_W) {
+            s += grad(phase, mid + half * Complex64::from(*x)) * Complex64::from(w);
+        }
+        s * half
+    };
+
+    // phi at each vertex, continued outward from the anchor (only used in
+    // continuous mode).
+    let phi_vert: Vec<Complex64> = if continuous {
+        let n = points.len();
+        let mut v = vec![Complex64::new(0.0, 0.0); n];
+        let a = anchor.min(n.saturating_sub(1));
+        v[a] = val(phase, points[a]);
+        for i in (0..a).rev() {
+            v[i] = v[i + 1] - grad_integral(points[i], points[i + 1]);
+        }
+        for i in (a + 1)..n {
+            v[i] = v[i - 1] + grad_integral(points[i - 1], points[i]);
+        }
+        v
+    } else {
+        Vec::new()
+    };
+
     let mut hi = Complex64::new(0.0, 0.0);
     let mut lo = Complex64::new(0.0, 0.0);
-    for seg in points.windows(2) {
-        let mid = (seg[0] + seg[1]) * Complex64::from(0.5);
-        let half = (seg[1] - seg[0]) * Complex64::from(0.5);
+    for (k, seg) in points.windows(2).enumerate() {
+        let mid = (seg[0] + seg[1]) * half_c;
+        let half = (seg[1] - seg[0]) * half_c;
+        let f = |z: Complex64| -> Complex64 {
+            let phi = if continuous {
+                phi_vert[k] + grad_integral(seg[0], z)
+            } else {
+                val(phase, z)
+            };
+            amplitude(z) * (iw * phi).exp()
+        };
         let mut s8 = Complex64::new(0.0, 0.0);
         for (x, w) in GL8_X.iter().zip(GL8_W) {
             s8 += f(mid + half * Complex64::from(*x)) * Complex64::from(w);
@@ -531,8 +604,14 @@ impl<'a> ThimbleSolver<'a> {
             piece.push(saddle.z);
             piece.extend(&plus.points);
 
-            let (p_hi, p_lo) =
-                integrate_polyline(phase, cfg.omega, &piece, &|_| Complex64::new(1.0, 0.0));
+            let (p_hi, p_lo) = integrate_polyline(
+                phase,
+                cfg.omega,
+                &piece,
+                &|_| Complex64::new(1.0, 0.0),
+                cfg.continuous_phase,
+                minus.points.len(),
+            );
             let m = Complex64::from(multiplicity as f64);
             hi += p_hi * m;
             lo += p_lo * m;
@@ -623,7 +702,8 @@ pub(crate) fn solve_half_line(
             Vec::new()
         };
         piece.extend(&endpoint.points);
-        let (p_hi, p_lo) = integrate_polyline(phase, cfg.omega, &piece, amplitude);
+        let (p_hi, p_lo) =
+            integrate_polyline(phase, cfg.omega, &piece, amplitude, cfg.continuous_phase, 0);
         hi += p_hi;
         lo += p_lo;
     }
@@ -681,7 +761,14 @@ pub(crate) fn solve_half_line(
         let mut piece: Vec<Complex64> = minus.points.iter().rev().copied().collect();
         piece.push(saddle.z);
         piece.extend(&plus.points);
-        let (p_hi, p_lo) = integrate_polyline(phase, cfg.omega, &piece, amplitude);
+        let (p_hi, p_lo) = integrate_polyline(
+            phase,
+            cfg.omega,
+            &piece,
+            amplitude,
+            cfg.continuous_phase,
+            minus.points.len(),
+        );
         let m = Complex64::from(multiplicity as f64);
         hi += p_hi * m;
         lo += p_lo * m;
@@ -819,7 +906,14 @@ fn integrate_thimbles(
         let mut piece: Vec<Complex64> = minus.points.iter().rev().copied().collect();
         piece.push(saddle.z);
         piece.extend(&plus.points);
-        let (p_hi, p_lo) = integrate_polyline(phase, cfg.omega, &piece, amplitude);
+        let (p_hi, p_lo) = integrate_polyline(
+            phase,
+            cfg.omega,
+            &piece,
+            amplitude,
+            cfg.continuous_phase,
+            minus.points.len(),
+        );
         let m = Complex64::from(multiplicity as f64);
         hi += p_hi * m;
         lo += p_lo * m;
