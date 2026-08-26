@@ -36,7 +36,7 @@ pub use polar::{PolarConfig, PolarSolver, solve_point_mass_polar};
 pub use quadrature::{GrundmannMoeller, Quadrature};
 pub use roots::poly_roots;
 pub use saddles::{Saddle, find_saddles, saddles_from_polynomial, second_derivative};
-pub use slice::{X1SlicePhase, slice_inner};
+pub use slice::{X1SlicePhase, hankel_ray, slice_inner, slice_saddle_contributions};
 pub use solver::{Output, Solver, SolverConfig};
 pub use thimble::{SolveMethod, ThimbleConfig, ThimbleSolver, solve_1d_hybrid};
 

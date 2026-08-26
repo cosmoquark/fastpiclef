@@ -28,7 +28,8 @@
 use crate::phase::{Phase, RationalPhase};
 use crate::phases::PointMassField;
 use crate::roots::{poly_add, poly_mul, poly_scale};
-use crate::thimble::{ThimbleConfig, ThimbleSolver};
+use crate::saddles::{Saddle, saddles_from_polynomial, second_derivative};
+use crate::thimble::{ThimbleConfig, ThimbleSolver, integrate_thimbles, saddle_thimble};
 use crate::{Output, Result};
 use nalgebra::SVector;
 use num_complex::Complex64;
@@ -158,4 +159,113 @@ pub fn slice_inner(field: &PointMassField, x2: f64, cfg: &ThimbleConfig) -> Resu
         ..cfg.clone()
     };
     ThimbleSolver::new_rational(&slice, cfg).run()
+}
+
+/// The slice phase around a single log branch point `p`, in the coordinate
+/// `u` with `z0 = p + e^u`. The substitution turns the `p`-log into the *linear*
+/// (entire) term `-(m/2) u` — the C1 `r = e^u` trick applied to an interior
+/// branch point — so the branch point maps to the regular endpoint `u -> -oo`,
+/// where the `e^u` amplitude kills the integrand. The remaining logs (the other
+/// masses and `p`'s partner) stay, tracked by the continuous-phase machinery.
+struct HankelUPhase<'a> {
+    field: &'a PointMassField,
+    x2: Complex64,
+    p: Complex64,
+}
+
+impl<'a> HankelUPhase<'a> {
+    fn z_of(&self, u: Complex64) -> Complex64 {
+        self.p + u.exp()
+    }
+}
+
+impl<'a> Phase<1> for HankelUPhase<'a> {
+    fn value(&self, u: &SVector<Complex64, 1>) -> Complex64 {
+        let uu = u[0];
+        let z0 = self.z_of(uu);
+        let du = z0 - self.field.beta[0];
+        let dv = self.x2 - self.field.beta[1];
+        let mut acc = 0.5 * (du * du + dv * dv);
+        for &(a, b, m) in &self.field.lenses {
+            let d = Complex64::i() * (self.x2 - b);
+            for q in [a + d, a - d] {
+                if (q - self.p).norm() < 1e-9 * (1.0 + self.p.norm()) {
+                    // ln(z0 - p) = u, the linear entire term.
+                    acc -= 0.5 * m * uu;
+                } else {
+                    acc -= 0.5 * m * (z0 - q).ln();
+                }
+            }
+        }
+        acc
+    }
+
+    fn gradient(&self, u: &SVector<Complex64, 1>) -> SVector<Complex64, 1> {
+        // dPhi/du = phi'(z0) * dz0/du = phi'(z0) * e^u; phi' is single-valued.
+        let eu = u[0].exp();
+        let z0 = self.p + eu;
+        let g = self
+            .field
+            .gradient(&SVector::<Complex64, 2>::new(z0, self.x2));
+        SVector::<Complex64, 1>::new(g[0] * eu)
+    }
+}
+
+/// Per-saddle diagnostic: for each slice saddle, its (position, Morse height
+/// `h`, unit-multiplicity thimble integral). Lets us check whether the missing
+/// swept-branch-point contribution is just a sub-dominant saddle the standard
+/// (single-valued) effectiveness test drops.
+pub fn slice_saddle_contributions(
+    field: &PointMassField,
+    x2: f64,
+    cfg: &ThimbleConfig,
+) -> Result<Vec<(Complex64, f64, Complex64)>> {
+    let slice = X1SlicePhase {
+        field,
+        x2: Complex64::from(x2),
+    };
+    let cfg = ThimbleConfig {
+        continuous_phase: true,
+        ..cfg.clone()
+    };
+    let saddles = saddles_from_polynomial(&slice, &slice.stationary_polynomial(), cfg.newton_tol)?;
+    let amp = |_: Complex64| Complex64::new(1.0, 0.0);
+    let mut out = Vec::new();
+    for s in &saddles {
+        let contrib = saddle_thimble(&slice, &cfg, s, &amp)?;
+        out.push((s.z, -s.value.im, contrib));
+    }
+    Ok(out)
+}
+
+/// The branch-cut *ray* integral for one log branch point `p`: the thimble sum
+/// of the `u = ln(z0 - p)` phase [`HankelUPhase`] over the full `u`-line, with
+/// the `dz0 = e^u du` amplitude. Its saddles are exactly the slice saddles
+/// mapped `u = ln(z0_saddle - p)` (since `phi'(z0)=0` iff `dPhi/du=0`), so no
+/// new saddle search is needed. Returns the raw ray integral `I_ray(p)`; the
+/// caller applies the monodromy prefactor and decides whether `p` is swept.
+pub fn hankel_ray(field: &PointMassField, x2: f64, p: Complex64, cfg: &ThimbleConfig) -> Result<Complex64> {
+    let x2c = Complex64::from(x2);
+    let phase = HankelUPhase { field, x2: x2c, p };
+
+    let slice = X1SlicePhase { field, x2: x2c };
+    let z_saddles = saddles_from_polynomial(&slice, &slice.stationary_polynomial(), cfg.newton_tol)?;
+    let u_saddles: Vec<Saddle> = z_saddles
+        .iter()
+        .map(|s| {
+            let u = (s.z - p).ln();
+            Saddle {
+                z: u,
+                value: phase.value(&SVector::<Complex64, 1>::new(u)),
+                second: second_derivative(&phase, u),
+            }
+        })
+        .collect();
+
+    let cfg = ThimbleConfig {
+        continuous_phase: true,
+        ..cfg.clone()
+    };
+    let amplitude = |u: Complex64| u.exp();
+    integrate_thimbles(&phase, &cfg, &amplitude, &u_saddles).map(|o| o.value)
 }
