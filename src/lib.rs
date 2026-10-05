@@ -13,6 +13,7 @@
 
 pub mod error;
 pub mod flow;
+pub mod flow_contour;
 pub mod images;
 pub mod mesh;
 pub mod phase;
@@ -30,6 +31,7 @@ mod python;
 
 pub use error::{Error, Result};
 pub use flow::{Flow, Rk4, StepReport};
+pub use flow_contour::{FlowContourConfig, flow_contour_integral};
 pub use mesh::Mesh;
 pub use phase::{DynPhase, Phase, PhaseAsDyn, RationalPhase, RationalPhase2D, as_dyn};
 pub use polar::{PolarConfig, PolarSolver, solve_point_mass_polar};

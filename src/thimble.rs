@@ -370,7 +370,7 @@ const GL8_W: [f64; 8] = [
 /// physical branch (the saddle, which sits on the real axis for a real saddle)
 /// — by integrating the single-valued gradient. This keeps `e^{i omega phi}`
 /// on one sheet across the log branch cuts the polyline may cross.
-fn integrate_polyline(
+pub(crate) fn integrate_polyline(
     phase: &dyn Phase<1>,
     omega: f64,
     points: &[Complex64],
