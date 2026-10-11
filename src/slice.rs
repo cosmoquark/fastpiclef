@@ -41,6 +41,7 @@ use crate::thimble::{ThimbleConfig, ThimbleSolver};
 use crate::{Error, Output, Result};
 use nalgebra::SVector;
 use num_complex::Complex64;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn poly_sub(a: &[Complex64], b: &[Complex64]) -> Vec<Complex64> {
     poly_add(a, &poly_scale(b, Complex64::new(-1.0, 0.0)))
@@ -353,14 +354,16 @@ fn inner_rc(
     if !(omega > 0.0) || !omega.is_finite() {
         return Err(Error::InvalidInput("omega must be > 0 and finite"));
     }
-    let ctx = InnerCtx::new(field, base, off);
-    let real_slice = off.im == 0.0;
-    if !real_slice {
+    if off.im != 0.0 {
         // Sector validity: Im(d_k^2) > 0 for every mass is what keeps each
         // w_k in the open upper half plane along the whole inner contour.
         // (Satisfied on the outer rotated tails by construction; a plain
         // complex x2 off those rays may violate it — reject it.)
-        for &d in &ctx.dk {
+        for &(_, b, m) in &field.lenses {
+            if m == 0.0 {
+                continue; // a zero-coefficient log has no branch point
+            }
+            let d = Complex64::from(base - b) + off;
             if (d * d).im <= 0.0 {
                 return Err(Error::InvalidInput(
                     "complex slice position outside the validated sector: Im((x2-b)^2) <= 0",
@@ -368,6 +371,21 @@ fn inner_rc(
             }
         }
     }
+    Ok(inner_rc_unchecked(field, base, off, cfg))
+}
+
+/// [`inner_rc`] without the input validation — for callers that have already
+/// established validity (`slice_field`: omega checked once, sector satisfied
+/// by construction on its anchored positions).
+fn inner_rc_unchecked(
+    field: &PointMassField,
+    base: f64,
+    off: Complex64,
+    cfg: &SliceConfig,
+) -> (Output, usize) {
+    let omega = cfg.omega;
+    let ctx = InnerCtx::new(field, base, off);
+    let real_slice = off.im == 0.0;
 
     // Core breakpoints: every branch-point abscissa (and beta_0), bracketed.
     let shift = off.im.abs();
@@ -461,7 +479,7 @@ fn inner_rc(
         error += if decayed { 4.0 * end } else { t_end * end };
     }
 
-    Ok((Output { value, error }, evals))
+    (Output { value, error }, evals)
 }
 
 /// Inner integral `G(x2) = integral_RR e^{i omega phi(z_0, x_2)} dif z_0` for
@@ -480,4 +498,152 @@ pub fn slice_inner_rc_evals(
     cfg: &SliceConfig,
 ) -> Result<(Output, usize)> {
     inner_rc(field, x2.re, Complex64::new(0.0, x2.im), cfg)
+}
+
+/// Result of the full 2D field integral [`slice_field`].
+#[derive(Debug, Clone, Copy)]
+pub struct SliceFieldOutput {
+    /// The raw integral $I = integral.double_{RR^2} e^{i omega phi} dif x_0 dif x_1$.
+    pub value: Complex64,
+    /// Conservative error estimate: outer panel disagreements plus every
+    /// propagated inner error plus the tail truncation budgets.
+    pub error: f64,
+    /// Number of inner solves performed (the cost driver; one per outer node).
+    pub inner_solves: usize,
+}
+
+/// The full 2D point-mass-field integral — the RC construction in *both*
+/// variables (option A, milestone A1):
+///
+/// * **outer core** — the real segment in $x_2$ spanning every pinch height
+///   $b_j$ (and $beta_1$), each half-interval parametrised from its breakpoint
+///   as $x_2 = x_0 ± rho^2$ (`dx_2 = 2 rho dif rho`), which both softens the
+///   $|x_2 - b_j|^{1 - i omega m_j}$ cusp into a quadrature-smooth integrand
+///   and hands the inner solve its `(base, offset)` pair so $x_2 - b_j$ is
+///   formed exactly;
+/// * **outer tails** — $x_2 = B_2 + e^{i pi/4} s$ and $A_2 - e^{i pi/4} s$,
+///   on which the inner integral runs at *complex* $x_2$: there
+///   $"Im"(x_2 - b_j)^2 > 0$, so every $w_k$ stays in the upper half plane
+///   along the whole inner contour and the principal log remains the analytic
+///   continuation — the inner core widens by $|"Im"\,x_2|$ to keep the inner
+///   tail wedges branch-point-free.
+///
+/// The outer integrand reports the inner solve's error through the Jacobian,
+/// so the returned error budget is the full nested estimate. `cfg.parallel`
+/// evaluates outer panels' nodes (i.e. inner solves) with rayon, bitwise
+/// identical to the serial evaluation. Returns the **raw** integral —
+/// normalisation to the free-space amplification happens in the caller
+/// (the Python layer, as for the other solvers).
+pub fn slice_field(field: &PointMassField, cfg: &SliceConfig) -> Result<SliceFieldOutput> {
+    let omega = cfg.omega;
+    if !(omega > 0.0) || !omega.is_finite() {
+        return Err(Error::InvalidInput("omega must be > 0 and finite"));
+    }
+    if !(cfg.margin > 0.0) || !cfg.margin.is_finite()
+        || !(cfg.margin_outer > 0.0) || !cfg.margin_outer.is_finite()
+    {
+        return Err(Error::InvalidInput("margins must be > 0 and finite"));
+    }
+    for &(a, b, m) in &field.lenses {
+        if !a.is_finite() || !b.is_finite() || !m.is_finite() {
+            return Err(Error::InvalidInput("lens positions and masses must be finite"));
+        }
+    }
+    // Zero-mass lenses contribute nothing (a zero-coefficient log has no
+    // branch point); dropping them once here keeps their abscissae out of
+    // every breakpoint list below.
+    let eff_field = PointMassField {
+        beta: field.beta,
+        lenses: field
+            .lenses
+            .iter()
+            .copied()
+            .filter(|&(_, _, m)| m != 0.0)
+            .collect(),
+    };
+
+    // Outer breakpoints: every pinch height b_j (and beta_1), bracketed.
+    let (mut bmin, mut bmax) = (field.beta[1], field.beta[1]);
+    for &(_, b, _) in &eff_field.lenses {
+        bmin = bmin.min(b);
+        bmax = bmax.max(b);
+    }
+    let (a2, b2) = (bmin - cfg.margin_outer, bmax + cfg.margin_outer);
+    let mut pts = vec![a2, b2];
+    for &(_, b, _) in &eff_field.lenses {
+        pts.push(b);
+    }
+    pts.sort_by(|p, q| p.partial_cmp(q).unwrap());
+    pts.dedup();
+
+    let mass_sum: f64 = eff_field.lenses.iter().map(|&(_, _, m)| m).sum();
+    let span = (a2 - field.beta[1]).abs().max((b2 - field.beta[1]).abs());
+    let floor = 4e-16 * (1.0 + omega * (0.5 * span * span + 10.0 + mass_sum));
+    let outer_cfg = AdaptiveConfig {
+        tol: cfg.tol_outer,
+        floor,
+        min_len: 1e-12,
+        max_panels: 200_000,
+    };
+    let solves = AtomicUsize::new(0);
+
+    let mut value = Complex64::new(0.0, 0.0);
+    let mut error = 0.0;
+
+    // Outer core: anchored halves x2 = x0 + sgn*rho^2. Both halves map to
+    // drho in [0, rmax] with a + Jacobian 2*rho after orientation (the
+    // right-anchored half traverses [mid, hi] backwards in rho).
+    for win in pts.windows(2) {
+        let (lo, hi) = (win[0], win[1]);
+        let rmax = (0.5 * (hi - lo)).sqrt();
+        for (x0, sgn) in [(lo, 1.0), (hi, -1.0)] {
+            let f = |rho: f64| -> (Complex64, f64) {
+                solves.fetch_add(1, Ordering::Relaxed);
+                let off = Complex64::new(sgn * rho * rho, 0.0);
+                let (o, _) = inner_rc_unchecked(&eff_field, x0, off, cfg);
+                let jac = 2.0 * rho;
+                (o.value * jac, o.error * jac)
+            };
+            let res = integrate(&f, 0.0, rmax, &outer_cfg, cfg.parallel);
+            value += res.value;
+            error += res.error;
+        }
+    }
+
+    // Outer tails: x2 = end + sgn*e4*s. Same sign bookkeeping as the inner
+    // tails (Jacobian and orientation flips cancel), so both contribute
+    // + e4 * G.
+    let e4 = Complex64::from_polar(1.0, std::f64::consts::FRAC_PI_4);
+    for (end_x2, sgn) in [(b2, 1.0), (a2, -1.0)] {
+        let f = |s: f64| -> (Complex64, f64) {
+            solves.fetch_add(1, Ordering::Relaxed);
+            let off = e4 * Complex64::from(sgn * s);
+            let (o, _) = inner_rc_unchecked(&eff_field, end_x2, off, cfg);
+            (o.value * e4, o.error) // |dz2/ds| = |e4| = 1
+        };
+        // Decay probe (the s^2/2 self-term of the rotated ray gives e^{-45}
+        // at the default length; a huge total mass can slow it — double until
+        // negligible, then budget the truncation).
+        let mut s_end = (2.0 * 45.0 / omega).sqrt() + 2.0;
+        let scale = f(0.0).0.norm().max(1e-30);
+        let mut decayed = false;
+        for _ in 0..5 {
+            if f(s_end).0.norm() <= 1e-17 * scale {
+                decayed = true;
+                break;
+            }
+            s_end *= 2.0;
+        }
+        let res = integrate(&f, 0.0, s_end, &outer_cfg, cfg.parallel);
+        value += res.value;
+        error += res.error;
+        let end = f(s_end).0.norm();
+        error += if decayed { 4.0 * end } else { s_end * end };
+    }
+
+    Ok(SliceFieldOutput {
+        value,
+        error,
+        inner_solves: solves.into_inner(),
+    })
 }

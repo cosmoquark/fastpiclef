@@ -39,8 +39,8 @@ pub use quadrature::{GrundmannMoeller, Quadrature};
 pub use roots::poly_roots;
 pub use saddles::{Saddle, find_saddles, saddles_from_polynomial, second_derivative};
 pub use slice::{
-    SliceConfig, X1SlicePhase, branch_point_indicator, slice_inner, slice_inner_rc,
-    slice_inner_rc_evals,
+    SliceConfig, SliceFieldOutput, X1SlicePhase, branch_point_indicator, slice_field, slice_inner,
+    slice_inner_rc, slice_inner_rc_evals,
 };
 pub use solver::{Output, Solver, SolverConfig};
 pub use thimble::{SolveMethod, ThimbleConfig, ThimbleSolver, solve_1d_hybrid};
