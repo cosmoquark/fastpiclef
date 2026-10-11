@@ -6,9 +6,17 @@
 //! outer integral over $x_1$ of an **inner 1D thimble** in $x_0$:
 //! $$ I = \int_{\mathbb R} G(x_1)\,dx_1, \qquad
 //!    G(x_1) = \int_{\mathbb R} e^{i\omega\phi(z_0, x_1)}\,dz_0. $$
-//! This module provides the inner kernel (milestone A0): the slice phase and
-//! its complete polynomial saddle source, so each inner integral runs on the
-//! proven full-line [`ThimbleSolver`] rather than the (log-unstable) mesh.
+//! This module provides two inner kernels. The *exact* one (A0', since
+//! 2026-10-11) is [`slice_inner_rc`]: a real-axis core spanning every
+//! branch-point abscissa plus tails rotated by $\pi/4$ into the Gaussian
+//! valleys — no branch point is ever swept, so the deformation is exact by
+//! Cauchy with no sheet/Stokes bookkeeping (see the Journal entry of
+//! 2026-10-11 for the measurements that motivated the switch). The thimble
+//! kernel [`slice_inner`] (A0) remains as the high-$\omega$ path — its
+//! $O(1)$-in-$\omega$ cost is not needed below $\omega \sim$ a few hundred,
+//! where [`slice_inner_rc`] is both faster and exact — with the
+//! swept-branch-point indicator [`branch_point_indicator`] wired into its
+//! error budget so it can no longer report $10^{-13}$ while being 80% wrong.
 //!
 //! At a fixed $x_1 = c$ the slice phase in $z_0$ is
 //! $\phi_c(z_0) = \tfrac12(z_0-\beta_0)^2 + \tfrac12(c-\beta_1)^2
@@ -25,12 +33,12 @@
 //! through a mass — the outer integrator (milestone A1) treats those $c = b_j$
 //! crossings as panel breakpoints.
 
+use crate::adaptive::{AdaptiveConfig, integrate};
 use crate::phase::{Phase, RationalPhase};
 use crate::phases::PointMassField;
 use crate::roots::{poly_add, poly_mul, poly_scale};
-use crate::saddles::{Saddle, saddles_from_polynomial, second_derivative};
-use crate::thimble::{ThimbleConfig, ThimbleSolver, integrate_thimbles, saddle_thimble};
-use crate::{Output, Result};
+use crate::thimble::{ThimbleConfig, ThimbleSolver};
+use crate::{Error, Output, Result};
 use nalgebra::SVector;
 use num_complex::Complex64;
 
@@ -154,118 +162,322 @@ pub fn slice_inner(field: &PointMassField, x2: f64, cfg: &ThimbleConfig) -> Resu
     };
     // The log potential is multivalued, so h and the quadrature must track phi
     // by continuation of its single-valued gradient.
+    let omega = cfg.omega;
     let cfg = ThimbleConfig {
         continuous_phase: true,
         ..cfg.clone()
     };
-    ThimbleSolver::new_rational(&slice, cfg).run()
-}
-
-/// The slice phase around a single log branch point `p`, in the coordinate
-/// `u` with `z0 = p + e^u`. The substitution turns the `p`-log into the *linear*
-/// (entire) term `-(m/2) u` — the C1 `r = e^u` trick applied to an interior
-/// branch point — so the branch point maps to the regular endpoint `u -> -oo`,
-/// where the `e^u` amplitude kills the integrand. The remaining logs (the other
-/// masses and `p`'s partner) stay, tracked by the continuous-phase machinery.
-struct HankelUPhase<'a> {
-    field: &'a PointMassField,
-    x2: Complex64,
-    p: Complex64,
-}
-
-impl<'a> HankelUPhase<'a> {
-    fn z_of(&self, u: Complex64) -> Complex64 {
-        self.p + u.exp()
-    }
-}
-
-impl<'a> Phase<1> for HankelUPhase<'a> {
-    fn value(&self, u: &SVector<Complex64, 1>) -> Complex64 {
-        let uu = u[0];
-        let z0 = self.z_of(uu);
-        let du = z0 - self.field.beta[0];
-        let dv = self.x2 - self.field.beta[1];
-        let mut acc = 0.5 * (du * du + dv * dv);
-        for &(a, b, m) in &self.field.lenses {
-            let d = Complex64::i() * (self.x2 - b);
-            for q in [a + d, a - d] {
-                if (q - self.p).norm() < 1e-9 * (1.0 + self.p.norm()) {
-                    // ln(z0 - p) = u, the linear entire term.
-                    acc -= 0.5 * m * uu;
-                } else {
-                    acc -= 0.5 * m * (z0 - q).ln();
-                }
-            }
-        }
-        acc
-    }
-
-    fn gradient(&self, u: &SVector<Complex64, 1>) -> SVector<Complex64, 1> {
-        // dPhi/du = phi'(z0) * dz0/du = phi'(z0) * e^u; phi' is single-valued.
-        let eu = u[0].exp();
-        let z0 = self.p + eu;
-        let g = self
-            .field
-            .gradient(&SVector::<Complex64, 2>::new(z0, self.x2));
-        SVector::<Complex64, 1>::new(g[0] * eu)
-    }
-}
-
-/// Per-saddle diagnostic: for each slice saddle, its (position, Morse height
-/// `h`, unit-multiplicity thimble integral). Lets us check whether the missing
-/// swept-branch-point contribution is just a sub-dominant saddle the standard
-/// (single-valued) effectiveness test drops.
-pub fn slice_saddle_contributions(
-    field: &PointMassField,
-    x2: f64,
-    cfg: &ThimbleConfig,
-) -> Result<Vec<(Complex64, f64, Complex64)>> {
-    let slice = X1SlicePhase {
-        field,
-        x2: Complex64::from(x2),
-    };
-    let cfg = ThimbleConfig {
-        continuous_phase: true,
-        ..cfg.clone()
-    };
-    let saddles = saddles_from_polynomial(&slice, &slice.stationary_polynomial(), cfg.newton_tol)?;
-    let amp = |_: Complex64| Complex64::new(1.0, 0.0);
-    let mut out = Vec::new();
-    for s in &saddles {
-        let contrib = saddle_thimble(&slice, &cfg, s, &amp)?;
-        out.push((s.z, -s.value.im, contrib));
-    }
+    let mut out = ThimbleSolver::new_rational(&slice, cfg).run()?;
+    // The saddle sum is blind to swept-branch-point (Hankel) contributions by
+    // construction (homology incompleteness, not quadrature error); the
+    // indicator bounds them, with a safety factor of 100 over the measured
+    // 0.05-6x spread. This keeps the thimble kernel usable as the high-omega
+    // path: it is trustworthy exactly where this budget is small.
+    out.error += 100.0 * branch_point_indicator(field, x2, omega);
     Ok(out)
 }
 
-/// The branch-cut *ray* integral for one log branch point `p`: the thimble sum
-/// of the `u = ln(z0 - p)` phase [`HankelUPhase`] over the full `u`-line, with
-/// the `dz0 = e^u du` amplitude. Its saddles are exactly the slice saddles
-/// mapped `u = ln(z0_saddle - p)` (since `phi'(z0)=0` iff `dPhi/du=0`), so no
-/// new saddle search is needed. Returns the raw ray integral `I_ray(p)`; the
-/// caller applies the monodromy prefactor and decides whether `p` is swept.
-pub fn hankel_ray(field: &PointMassField, x2: f64, p: Complex64, cfg: &ThimbleConfig) -> Result<Complex64> {
-    let x2c = Complex64::from(x2);
-    let phase = HankelUPhase { field, x2: x2c, p };
-
-    let slice = X1SlicePhase { field, x2: x2c };
-    let z_saddles = saddles_from_polynomial(&slice, &slice.stationary_polynomial(), cfg.newton_tol)?;
-    let u_saddles: Vec<Saddle> = z_saddles
-        .iter()
-        .map(|s| {
-            let u = (s.z - p).ln();
-            Saddle {
-                z: u,
-                value: phase.value(&SVector::<Complex64, 1>::new(u)),
-                second: second_derivative(&phase, u),
+/// Swept-branch-point indicator of the *thimble* inner kernel
+/// ([`slice_inner`]): an upper bound (up to a measured factor ~0.05-6x) on the
+/// branch-cut (Hankel) contribution the disconnected saddle sum drops when
+/// the deformation of `RR` onto the thimbles sweeps a log branch point.
+///
+/// For each branch point `p = a_j ± i(x2 - b_j)` it is `e^{omega h(p)}` with
+/// `h = -Im phi` taken on the sheet reached *vertically* from `RR`: the
+/// vertical segment from `(a_j, 0)` to `p` crosses no cut of the composite log
+/// (whose cuts run vertically away from `RR`), and along it each `w_k` stays
+/// in one half plane, so `field.value` at `p` is the continued value. Only
+/// valley-side points (`h < 0`) can be swept — the descent cannot reach a
+/// hill. Returns 1.0 at an exact pinch or for a non-positive `omega`
+/// (conservative).
+///
+/// Measured on the two-mass sweep (2026-10-06, Journal entry 2026-10-11): the
+/// thimble's true error stays within 0.05-6x of the indicator, and routing on
+/// `100 * indicator < 1e-12 * |G|` never admitted a wrong slice.
+pub fn branch_point_indicator(field: &PointMassField, x2: f64, omega: f64) -> f64 {
+    if !(omega > 0.0) {
+        return 1.0;
+    }
+    let mut worst = 0.0_f64;
+    for &(a, b, _) in &field.lenses {
+        let d = x2 - b;
+        if d == 0.0 {
+            return 1.0; // exact pinch: the branch point sits on RR
+        }
+        for s in [1.0_f64, -1.0] {
+            let z = SVector::<Complex64, 2>::new(
+                Complex64::new(a, s * d * (1.0 - 1e-9)),
+                Complex64::from(x2),
+            );
+            let h = -field.value(&z).im;
+            if h < 0.0 {
+                worst = worst.max((omega * h).exp());
             }
-        })
-        .collect();
+        }
+    }
+    worst
+}
 
-    let cfg = ThimbleConfig {
-        continuous_phase: true,
-        ..cfg.clone()
+/// Configuration of the RC (real core + rotated tails) slice kernels —
+/// [`slice_inner_rc`] here, and the outer integral of the 2D field solver.
+#[derive(Debug, Clone)]
+pub struct SliceConfig {
+    /// Frequency in `e^{i omega phi}`.
+    pub omega: f64,
+    /// The inner real-axis core spans every branch-point abscissa (and
+    /// `beta_0`) plus this margin, widened by `|Im x2|` for complex slice
+    /// positions so the rotated-tail wedges stay branch-point-free.
+    pub margin: f64,
+    /// The outer core of the 2D field integral spans the mass heights `b_j`
+    /// (and `beta_1`) plus this margin.
+    pub margin_outer: f64,
+    /// Inner acceptance tolerance per unit length of `z_0`.
+    pub tol_inner: f64,
+    /// Outer acceptance tolerance per unit length of `x_2`.
+    pub tol_outer: f64,
+    /// Evaluate outer panels' nodes in parallel (bitwise identical to serial).
+    pub parallel: bool,
+}
+
+impl Default for SliceConfig {
+    fn default() -> Self {
+        Self {
+            omega: 1.0,
+            margin: 1.5,
+            margin_outer: 1.5,
+            tol_inner: 1e-14,
+            tol_outer: 1e-13,
+            parallel: true,
+        }
+    }
+}
+
+/// Evaluation context of one inner solve. The slice position is carried as
+/// `x2 = base + off` (`base` real) so that every `x2 - b_k` is formed as the
+/// exact constant `(base - b_k) + off`: on the outer core (`off = ±rho^2`
+/// real) this is what keeps `|x2 - b_j|` cancellation-free next to the pinch
+/// heights, where a naive difference loses ~10 orders of relative precision
+/// and stalls adaptive refinement.
+struct InnerCtx<'a> {
+    field: &'a PointMassField,
+    /// `d_k = (base - b_k) + off` per mass, and `dbeta = (base - beta_1) + off`.
+    dk: Vec<Complex64>,
+    dbeta: Complex64,
+    mass_sum: f64,
+}
+
+impl<'a> InnerCtx<'a> {
+    fn new(field: &'a PointMassField, base: f64, off: Complex64) -> Self {
+        let dk = field
+            .lenses
+            .iter()
+            .map(|&(_, b, _)| Complex64::from(base - b) + off)
+            .collect();
+        let dbeta = Complex64::from(base - field.beta[1]) + off;
+        let mass_sum = field.lenses.iter().map(|&(_, _, m)| m).sum();
+        Self {
+            field,
+            dk,
+            dbeta,
+            mass_sum,
+        }
+    }
+
+    /// Phase on the real-axis core at `x = x0 + sgn*r` — real arithmetic,
+    /// valid when `x2` is real (`off.im == 0`). Every `x - a_k` is formed as
+    /// the exact constant `(x0 - a_k) + sgn*r`.
+    #[inline]
+    fn phi_real(&self, r: f64, x0: f64, sgn: f64) -> f64 {
+        let u = (x0 - self.field.beta[0]) + sgn * r;
+        let d1 = self.dbeta.re;
+        let mut v = 0.5 * (u * u + d1 * d1);
+        for (k, &(a, _, m)) in self.field.lenses.iter().enumerate() {
+            let t = (x0 - a) + sgn * r;
+            let d = self.dk[k].re;
+            v -= 0.5 * m * (t * t + d * d).ln();
+        }
+        v
+    }
+
+    /// Phase on the real-axis core at `x = x0 + sgn*r` — complex slice
+    /// position (composite principal log; each `w_k` stays in the upper half
+    /// plane, checked by the caller).
+    #[inline]
+    fn phi_complex(&self, r: f64, x0: f64, sgn: f64) -> Complex64 {
+        let u = Complex64::from((x0 - self.field.beta[0]) + sgn * r);
+        let mut v = 0.5 * (u * u + self.dbeta * self.dbeta);
+        for (k, &(a, _, m)) in self.field.lenses.iter().enumerate() {
+            let t = Complex64::from((x0 - a) + sgn * r);
+            let w = t * t + self.dk[k] * self.dk[k];
+            v -= 0.5 * m * w.ln();
+        }
+        v
+    }
+
+    /// Phase at complex `z_0` (rotated-tail segments), composite principal log.
+    #[inline]
+    fn phi_tail(&self, z: Complex64) -> Complex64 {
+        let u = z - self.field.beta[0];
+        let mut v = 0.5 * (u * u + self.dbeta * self.dbeta);
+        for (k, &(a, _, m)) in self.field.lenses.iter().enumerate() {
+            let t = z - a;
+            let w = t * t + self.dk[k] * self.dk[k];
+            v -= 0.5 * m * w.ln();
+        }
+        v
+    }
+}
+
+/// The RC inner solve at `x2 = base + off` (the workhorse behind
+/// [`slice_inner_rc`] and the outer integral's anchored slice positions):
+///
+/// * **core** — the real segment `[A, B]`, `A <= min(beta_0, a_j) - margin`,
+///   `B >= max(beta_0, a_j) + margin` (widened by `|Im x2|`), each
+///   half-interval parametrised from its own breakpoint;
+/// * **tails** — `B + e^{i pi/4} t` and `A - e^{i pi/4} t`, `t >= 0`, into the
+///   Gaussian valleys, with a decay probe so a large total mass cannot leave a
+///   non-negligible truncation unnoticed.
+///
+/// No branch point lies in the swept wedges (`Re p_± = a_j ∓ Im(x2 - b_j)`),
+/// and along the tails every `w_k` stays in the open upper half plane, so the
+/// principal log is the analytic continuation of the physical value: the
+/// deformation never leaves the physical sheet. Returns the solve and its
+/// node-evaluation count.
+fn inner_rc(
+    field: &PointMassField,
+    base: f64,
+    off: Complex64,
+    cfg: &SliceConfig,
+) -> Result<(Output, usize)> {
+    let omega = cfg.omega;
+    if !(omega > 0.0) || !omega.is_finite() {
+        return Err(Error::InvalidInput("omega must be > 0 and finite"));
+    }
+    let ctx = InnerCtx::new(field, base, off);
+    let real_slice = off.im == 0.0;
+    if !real_slice {
+        // Sector validity: Im(d_k^2) > 0 for every mass is what keeps each
+        // w_k in the open upper half plane along the whole inner contour.
+        // (Satisfied on the outer rotated tails by construction; a plain
+        // complex x2 off those rays may violate it — reject it.)
+        for &d in &ctx.dk {
+            if (d * d).im <= 0.0 {
+                return Err(Error::InvalidInput(
+                    "complex slice position outside the validated sector: Im((x2-b)^2) <= 0",
+                ));
+            }
+        }
+    }
+
+    // Core breakpoints: every branch-point abscissa (and beta_0), bracketed.
+    let shift = off.im.abs();
+    let (mut amin, mut amax) = (field.beta[0], field.beta[0]);
+    for &(a, _, _) in &field.lenses {
+        amin = amin.min(a);
+        amax = amax.max(a);
+    }
+    let (aa, bb) = (amin - cfg.margin - shift, amax + cfg.margin + shift);
+    let mut pts = vec![aa, bb];
+    for &(a, _, _) in &field.lenses {
+        pts.push(a);
+    }
+    pts.sort_by(|p, q| p.partial_cmp(q).unwrap());
+    pts.dedup();
+
+    // Roundoff floor at the ulp level of omega*phi (see `adaptive`'s docs);
+    // `+ mass_sum` covers the log terms of large fields.
+    let span = (aa - field.beta[0]).abs().max((bb - field.beta[0]).abs());
+    let phimax = 0.5 * span * span + 0.5 * ctx.dbeta.norm_sqr() + 5.0 + ctx.mass_sum;
+    let floor = 4e-16 * (1.0 + omega * phimax);
+    let core_cfg = AdaptiveConfig {
+        tol: cfg.tol_inner,
+        floor,
+        min_len: 1e-15,
+        max_panels: 200_000,
     };
-    let amplitude = |u: Complex64| u.exp();
-    integrate_thimbles(&phase, &cfg, &amplitude, &u_saddles).map(|o| o.value)
+    let tail_cfg = AdaptiveConfig {
+        tol: cfg.tol_inner,
+        floor,
+        min_len: 1e-14,
+        max_panels: 200_000,
+    };
+
+    let mut value = Complex64::new(0.0, 0.0);
+    let mut error = 0.0;
+    let mut evals = 0usize;
+
+    // Core: each half-interval is parametrised from its own breakpoint (both
+    // halves map to dr in [0, half] with dx = +dr after orientation).
+    for win in pts.windows(2) {
+        let (lo, hi) = (win[0], win[1]);
+        let half = 0.5 * (hi - lo);
+        for (x0, sgn) in [(lo, 1.0), (hi, -1.0)] {
+            let f = |r: f64| -> (Complex64, f64) {
+                if real_slice {
+                    let phi = ctx.phi_real(r, x0, sgn);
+                    (Complex64::from_polar(1.0, omega * phi), 0.0)
+                } else {
+                    let phi = ctx.phi_complex(r, x0, sgn);
+                    ((Complex64::i() * omega * phi).exp(), 0.0)
+                }
+            };
+            let res = integrate(&f, 0.0, half, &core_cfg, false);
+            value += res.value;
+            error += res.error;
+            evals += res.evals;
+        }
+    }
+
+    // Rotated tails, pi/4 into the Gaussian valleys.
+    let e4 = Complex64::from_polar(1.0, std::f64::consts::FRAC_PI_4);
+    let iw = Complex64::i() * omega;
+    for (end_z, sgn) in [(bb, 1.0), (aa, -1.0)] {
+        // z = end_z + sgn * e4 * t. On the right tail (sgn = +1) this is the
+        // plain change of variables dz = e4 dt; on the left (sgn = -1) both
+        // the Jacobian (-e4 dt) and the flipped t-orientation (integral over
+        // t in [0, inf) runs z from A toward -infinite) contribute a sign, so
+        // both tails enter as +e4 * integrand.
+        let f = |t: f64| (e4 * (iw * ctx.phi_tail(end_z + sgn * e4 * t)).exp(), 0.0);
+        // Decay probe: the Gaussian part gives e^{-45} at the default length,
+        // but large total mass slows the decay — double until negligible.
+        let mut t_end = (2.0 * 45.0 / omega).sqrt() + 2.0;
+        let scale = f(0.0).0.norm().max(1e-30);
+        let mut decayed = false;
+        for _ in 0..5 {
+            if f(t_end).0.norm() <= 1e-17 * scale {
+                decayed = true;
+                break;
+            }
+            t_end *= 2.0;
+        }
+        let res = integrate(&f, 0.0, t_end, &tail_cfg, false);
+        value += res.value;
+        error += res.error;
+        evals += res.evals;
+        // Truncation budget: with the probe satisfied the remaining tail is a
+        // geometric continuation of the last resolved value; otherwise (a
+        // pathological field) budget it linearly so the caller sees it.
+        let end = f(t_end).0.norm();
+        error += if decayed { 4.0 * end } else { t_end * end };
+    }
+
+    Ok((Output { value, error }, evals))
+}
+
+/// Inner integral `G(x2) = integral_RR e^{i omega phi(z_0, x_2)} dif z_0` for
+/// the point-mass field by the RC construction — the *exact* kernel of the
+/// Cartesian-slice reduction (A0'; see the module docs). `x2` may be complex
+/// (the outer rotated tails of the 2D field solver need that), provided
+/// `Im((x2 - b_j)^2) > 0` for every mass. Returns the raw integral.
+pub fn slice_inner_rc(field: &PointMassField, x2: Complex64, cfg: &SliceConfig) -> Result<Output> {
+    Ok(slice_inner_rc_evals(field, x2, cfg)?.0)
+}
+
+/// [`slice_inner_rc`] with the node-evaluation count (diagnostics/benchmarks).
+pub fn slice_inner_rc_evals(
+    field: &PointMassField,
+    x2: Complex64,
+    cfg: &SliceConfig,
+) -> Result<(Output, usize)> {
+    inner_rc(field, x2.re, Complex64::new(0.0, x2.im), cfg)
 }

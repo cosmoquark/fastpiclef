@@ -370,7 +370,7 @@ const GL8_W: [f64; 8] = [
 /// physical branch (the saddle, which sits on the real axis for a real saddle)
 /// — by integrating the single-valued gradient. This keeps `e^{i omega phi}`
 /// on one sheet across the log branch cuts the polyline may cross.
-pub(crate) fn integrate_polyline(
+fn integrate_polyline(
     phase: &dyn Phase<1>,
     omega: f64,
     points: &[Complex64],
@@ -853,9 +853,8 @@ pub(crate) fn point_mass_radial(y: f64, cos_t: f64, cfg: &ThimbleConfig) -> Resu
 /// once; a complex saddle enters once per signed ascent crossing of R (opposite
 /// orientations cancel), and one already below the Morse floor is budgeted and
 /// skipped. The full-line counterpart of [`solve_half_line`], used where the
-/// complete saddle set is supplied rather than found (the point-mass u-phase,
-/// and the slice solver's Hankel branch-cut rays).
-pub(crate) fn integrate_thimbles(
+/// complete saddle set is supplied rather than found (the point-mass u-phase).
+fn integrate_thimbles(
     phase: &dyn Phase<1>,
     cfg: &ThimbleConfig,
     amplitude: &dyn Fn(Complex64) -> Complex64,
@@ -923,34 +922,6 @@ pub(crate) fn integrate_thimbles(
         value: hi,
         error: (hi - lo).norm() + extra_err,
     })
-}
-
-/// The thimble integral of a *single* saddle — both descending branches, unit
-/// multiplicity, no effectiveness gating. For diagnosing which sub-dominant
-/// saddles a multivalued integrand makes effective (the slice solver's
-/// swept-branch-point contribution shows up as one of these).
-pub(crate) fn saddle_thimble(
-    phase: &dyn Phase<1>,
-    cfg: &ThimbleConfig,
-    saddle: &Saddle,
-    amplitude: &dyn Fn(Complex64) -> Complex64,
-) -> Result<Complex64> {
-    let cfg = &extend_window(cfg, std::slice::from_ref(saddle));
-    let d_desc = take_off_direction(saddle.second);
-    let plus = trace_level_curve(phase, cfg, saddle.z, saddle.big_h(), Some(d_desc), false)?;
-    let minus = trace_level_curve(phase, cfg, saddle.z, saddle.big_h(), Some(-d_desc), false)?;
-    let mut piece: Vec<Complex64> = minus.points.iter().rev().copied().collect();
-    piece.push(saddle.z);
-    piece.extend(&plus.points);
-    let (hi, _) = integrate_polyline(
-        phase,
-        cfg.omega,
-        &piece,
-        amplitude,
-        cfg.continuous_phase,
-        minus.points.len(),
-    );
-    Ok(hi)
 }
 
 /// Which solver produced a [`solve_1d_hybrid`] result.

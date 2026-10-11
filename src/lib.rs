@@ -11,9 +11,9 @@
 //! [`Solver`] directly; callers with a runtime dimension can use [`solve`],
 //! which dispatches through a `seq-macro`-generated match.
 
+pub mod adaptive;
 pub mod error;
 pub mod flow;
-pub mod flow_contour;
 pub mod images;
 pub mod mesh;
 pub mod phase;
@@ -29,16 +29,19 @@ pub mod thimble;
 #[cfg(feature = "python")]
 mod python;
 
+pub use adaptive::{AdaptiveConfig, AdaptiveResult, integrate};
 pub use error::{Error, Result};
 pub use flow::{Flow, Rk4, StepReport};
-pub use flow_contour::{FlowContourConfig, flow_contour_integral};
 pub use mesh::Mesh;
 pub use phase::{DynPhase, Phase, PhaseAsDyn, RationalPhase, RationalPhase2D, as_dyn};
 pub use polar::{PolarConfig, PolarSolver, solve_point_mass_polar};
 pub use quadrature::{GrundmannMoeller, Quadrature};
 pub use roots::poly_roots;
 pub use saddles::{Saddle, find_saddles, saddles_from_polynomial, second_derivative};
-pub use slice::{X1SlicePhase, hankel_ray, slice_inner, slice_saddle_contributions};
+pub use slice::{
+    SliceConfig, X1SlicePhase, branch_point_indicator, slice_inner, slice_inner_rc,
+    slice_inner_rc_evals,
+};
 pub use solver::{Output, Solver, SolverConfig};
 pub use thimble::{SolveMethod, ThimbleConfig, ThimbleSolver, solve_1d_hybrid};
 
