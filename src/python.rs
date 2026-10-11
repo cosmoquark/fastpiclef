@@ -15,8 +15,8 @@ use crate::phases::{
 };
 use crate::saddles::saddles_from_polynomial;
 use crate::{
-    Error, PolarConfig, PolarSolver, RationalPhase, Solver, SolverConfig, ThimbleConfig,
-    ThimbleSolver, solve_point_mass_polar,
+    Error, PolarConfig, PolarSolver, RationalPhase, SliceConfig, Solver, SolverConfig,
+    ThimbleConfig, ThimbleSolver, slice_field, solve_point_mass_polar,
 };
 use std::f64::consts::PI;
 
@@ -460,7 +460,9 @@ impl PyPointMass {
 
 /// A field of point-mass lenses (the microlensing / stellar-field problem).
 /// `lenses` is a list of `(x, y, mass)`; `beta = (bx, by)` is the source.
-/// Only the general mesh solver applies (non-axisymmetric, log potentials).
+/// The default solver is the exact RC slice reduction (`method="slice"`);
+/// `method="mesh"` remains available (it is the legacy flow solver and
+/// diverges on log potentials at moderate to high frequency).
 #[pyclass(name = "PointMassField")]
 struct PyPointMassField {
     inner: PointMassField,
@@ -506,11 +508,21 @@ impl PyPointMassField {
         Ok(make_output(2, omega, integral, 0.0, "geometric", self.inner.lenses.len()))
     }
 
-    #[pyo3(signature = (omega, *, method="mesh", delta=None, flow_steps=None, domain=None, quad_order=None))]
+    /// Exact finite-omega field integral. `method="slice"` is the RC
+    /// Cartesian-slice reduction (real core + rotated tails in both
+    /// variables; exact by Cauchy, validated against the point-mass
+    /// Nakamura-Deguchi closed form); `method="mesh"` is the legacy flow
+    /// solver (delta/flow_steps/domain/quad_order apply to it only). `tol`
+    /// sets both inner and outer acceptance tolerances; `margin` /
+    /// `margin_outer` resize the inner/outer cores.
+    #[pyo3(signature = (omega, *, method="slice", tol=None, margin=None, margin_outer=None, delta=None, flow_steps=None, domain=None, quad_order=None))]
     fn solve(
         &self,
         omega: f64,
         method: &str,
+        tol: Option<f64>,
+        margin: Option<f64>,
+        margin_outer: Option<f64>,
         delta: Option<f64>,
         flow_steps: Option<usize>,
         domain: Option<(f64, f64)>,
@@ -520,14 +532,32 @@ impl PyPointMassField {
             return Err(PyValueError::new_err("omega must be > 0"));
         }
         match method {
-            "mesh" | "auto" => {
+            "slice" | "auto" => {
+                let mut cfg = SliceConfig {
+                    omega,
+                    ..SliceConfig::default()
+                };
+                if let Some(t) = tol {
+                    cfg.tol_inner = t;
+                    cfg.tol_outer = t;
+                }
+                if let Some(m) = margin {
+                    cfg.margin = m;
+                }
+                if let Some(m) = margin_outer {
+                    cfg.margin_outer = m;
+                }
+                let o = slice_field(&self.inner, &cfg).map_err(map_err)?;
+                Ok(make_output(2, omega, o.value, o.error, "slice", o.inner_solves))
+            }
+            "mesh" => {
                 let cfg = mesh_config_2d(omega, delta, flow_steps, domain, quad_order);
                 let mut s = Solver::<2>::new(&self.inner, cfg);
                 let o = s.run().map_err(map_err)?;
                 Ok(make_output(2, omega, o.value, o.error, "mesh", s.steps_used()))
             }
             other => Err(PyValueError::new_err(format!(
-                "point-mass fields support only method='mesh' (got '{other}')"
+                "unknown method '{other}'; use 'slice', 'mesh', or 'auto'"
             ))),
         }
     }

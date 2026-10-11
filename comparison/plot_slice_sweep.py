@@ -1,13 +1,24 @@
-"""Visualize the M3A/A0 inner-slice kernel: the thimble G(x2) vs the 1D mesh
-oracle across the slice position x2, and the relative error that localizes the
-swept-branch-point gap Option 1 (Hankel terms) will close.
+"""The slice inner kernel G(x2) graded against the independent RC referee.
 
-Reads comparison/results/slice_sweep.csv (written by `cargo run --example
-slice_sweep`), writes notebooks/figures/slice_inner_validation.png.
+Reads `comparison/results/slice_sweep.csv` (written by
+`cargo run --release --example slice_sweep`), evaluates
+`comparison.referee.slice_referee` at the same slice positions, and renders a
+3x2 figure (rows: |G|, relative error with the thimble's own estimate and the
+swept-branch-point indicator, per-call time; columns: omega = 3 and 10) to
+`notebooks/figures/slice_inner_validation.png`.
+
+The story the figure must carry (2026-10-11): the thimble kernel is exact
+where no log branch point is swept and misses a branch-cut (Hankel)
+contribution where one is — its error estimate (dotted) stays tiny there by
+construction, which is exactly why the indicator (gold) exists and why the
+estimate now includes 100x it; the RC kernel is machine-exact everywhere at a
+fraction of the cost.
 """
 
 import csv
 import math
+import sys
+import time
 from pathlib import Path
 
 import matplotlib
@@ -17,61 +28,39 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import LogLocator
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from comparison.referee import TWO_MASS_BETA, TWO_MASS_LENSES, slice_referee  # noqa: E402
+
 CSV = ROOT / "comparison" / "results" / "slice_sweep.csv"
 OUT = ROOT / "notebooks" / "figures" / "slice_inner_validation.png"
 
 # --- palette (validated dataviz default, light mode) ---
-BLUE = "#2a78d6"   # thimble (the new method)
-ORANGE = "#eb6834"  # mesh oracle
+BLUE = "#2a78d6"    # thimble (A0)
+ORANGE = "#eb6834"  # RC (A0', exact)
+GOLD = "#b8860b"    # indicator / swept-region highlight
 INK = "#0b0b0b"
 INK2 = "#52514e"
 MUTED = "#8a8984"
-SHADE = "#eda100"   # swept-region highlight
 SURF = "#fcfcfb"
-FLOOR = 2e-14       # ~ machine precision
+FLOOR = 2e-14
 
-# masses of the field used in slice_sweep.rs: (a, b, m); the slice sweeps x2,
-# so branch points pinch the real axis as x2 -> b_j.
 MASS_B = [0.5, -0.4]
-SWEPT_THRESH = 1e-9  # rel. error above the machine floor => a branch point is swept
-
-
-def swept_spans(x2, rel, ok):
-    """Contiguous x2 intervals where the thimble deviates from the oracle
-    (rel error above the floor, or a stall) — the region Option 1 must fix."""
-    dev = [(not o) or (not math.isnan(r) and r > SWEPT_THRESH)
-           for r, o in zip(rel, ok)]
-    spans, start = [], None
-    for i, d in enumerate(dev):
-        if d and start is None:
-            start = x2[i]
-        elif not d and start is not None:
-            spans.append((start, x2[i]))
-            start = None
-    if start is not None:
-        spans.append((start, x2[-1]))
-    return spans
 
 
 def load(path):
-    x2, mag_th, mag_me, rel, ok, t_th, t_me = [], [], [], [], [], [], []
+    rows = []
     with open(path) as f:
         for row in csv.DictReader(f):
-            x2.append(float(row["x2"]))
-            good = row["ok"] == "1"
-            ok.append(good)
-            me = complex(float(row["re_mesh"]), float(row["im_mesh"]))
-            mag_me.append(abs(me))
-            if good:
-                th = complex(float(row["re_th"]), float(row["im_th"]))
-                mag_th.append(abs(th))
-                rel.append(float(row["relerr"]))
-            else:
-                mag_th.append(math.nan)
-                rel.append(math.nan)
-            t_th.append(float(row["t_th_ms"]))
-            t_me.append(float(row["t_mesh_ms"]))
-    return x2, mag_th, mag_me, rel, ok, t_th, t_me
+            rows.append(row)
+    return rows
+
+
+def col(rows, key):
+    out = []
+    for r in rows:
+        v = r[key]
+        out.append(float(v) if v not in ("nan", "") else math.nan)
+    return out
 
 
 def median(v):
@@ -80,10 +69,30 @@ def median(v):
 
 
 def main():
-    x2, mag_th, mag_me, rel, ok, t_th, t_me = load(CSV)
+    rows = load(CSV)
+    omegas = sorted({float(r["omega"]) for r in rows})
 
-    med_th, med_me = median(t_th), median(t_me)
-    speedup = med_me / med_th if med_th else float("nan")
+    data = {}
+    t0 = time.time()
+    for w in omegas:
+        sel = [r for r in rows if float(r["omega"]) == w]
+        x2 = col(sel, "x2")
+        ref = [slice_referee(x, w, TWO_MASS_LENSES, TWO_MASS_BETA, margin=4.0) for x in x2]
+        data[w] = {
+            "x2": x2,
+            "ref": ref,
+            "mag_ref": [abs(g) for g in ref],
+            "mag_th": [abs(complex(re, im)) for re, im in zip(col(sel, "re_th"), col(sel, "im_th"))],
+            "mag_rc": [abs(complex(re, im)) for re, im in zip(col(sel, "re_rc"), col(sel, "im_rc"))],
+            "err_th": [abs(complex(re, im) - g) / abs(g) for re, im, g in zip(col(sel, "re_th"), col(sel, "im_th"), ref)],
+            "err_rc": [abs(complex(re, im) - g) / abs(g) for re, im, g in zip(col(sel, "re_rc"), col(sel, "im_rc"), ref)],
+            "est_th": col(sel, "est_th"),
+            "ind": col(sel, "ind"),
+            "t_th": col(sel, "t_th_ms"),
+            "t_rc": col(sel, "t_rc_ms"),
+        }
+    print(f"referee evaluated at {sum(len(v['x2']) for v in data.values())} slices "
+          f"in {time.time() - t0:.1f}s")
 
     plt.rcParams.update({
         "font.size": 11,
@@ -93,104 +102,101 @@ def main():
         "figure.facecolor": SURF,
         "axes.facecolor": SURF,
     })
+    fig, axes = plt.subplots(3, len(omegas), figsize=(12.6, 9.4), sharex=True,
+                             height_ratios=[1.0, 1.35, 0.9])
+    fig.subplots_adjust(hspace=0.13, wspace=0.12, top=0.9, right=0.985, left=0.075,
+                        bottom=0.085)
 
-    fig, (ax0, ax1) = plt.subplots(
-        2, 1, figsize=(9, 6.6), height_ratios=[1.0, 1.15], sharex=True
-    )
-    fig.subplots_adjust(hspace=0.12, top=0.9, right=0.97, left=0.1, bottom=0.1)
+    for j, w in enumerate(omegas):
+        d = data[w]
+        x2 = d["x2"]
+        ax0, ax1, ax2 = axes[0][j], axes[1][j], axes[2][j]
 
-    spans = swept_spans(x2, rel, ok)
+        # ---- row 0: |G| ----
+        ax0.plot(x2, d["mag_ref"], color=INK, lw=3.2, alpha=0.25,
+                 solid_capstyle="round", label="RC referee (independent)")
+        ax0.plot(x2, d["mag_th"], color=BLUE, lw=1.5, solid_capstyle="round",
+                 label="slice thimble (A0)")
+        ax0.plot(x2, d["mag_rc"], color=ORANGE, lw=1.2, ls="--",
+                 label="RC kernel (A0$'$, exact)")
+        ax0.set_ylabel(r"$|G(x_2)|$" if j == 0 else "", color=INK2)
+        ax0.set_title(f"ω = {w:g}", fontsize=13, color=INK, loc="left", pad=8)
+        ax0.grid(True, color=MUTED, alpha=0.14, lw=0.6)
+        ax0.set_axisbelow(True)
+        for s in ("top", "right"):
+            ax0.spines[s].set_visible(False)
+        if j == 0:
+            ax0.legend(frameon=False, loc="upper right", fontsize=9)
 
-    # ---- panel 0: |G(x2)|, thimble vs oracle ----
-    for lo, hi in spans:
-        ax0.axvspan(lo, hi, color=SHADE, alpha=0.11, lw=0)
-    ax0.plot(x2, mag_me, color=ORANGE, lw=3.2, alpha=0.35, solid_capstyle="round",
-             label="1D mesh (oracle)")
-    ax0.plot(x2, mag_th, color=BLUE, lw=1.6, solid_capstyle="round",
-             label="slice thimble")
-    ax0.set_ylabel(r"$|G(x_2)|$   (inner integral)", color=INK2)
-    ax0.legend(frameon=False, loc="upper right", fontsize=10)
-    ax0.grid(True, color=MUTED, alpha=0.14, lw=0.6)
-    ax0.set_axisbelow(True)
-    for s in ("top", "right"):
-        ax0.spines[s].set_visible(False)
-    ax0.set_title(
-        "Cartesian-slice inner kernel (M3A / A0): the thimble reproduces the "
-        "true inner integral,\nexactly except where it sweeps a log branch point",
-        fontsize=12.5, color=INK, loc="left", pad=12,
-    )
+        # shade the swept band (where the thimble error exceeds the floor)
+        swept = [x for x, e in zip(x2, d["err_th"]) if not math.isnan(e) and e > 1e-8]
+        if swept:
+            ax0.axvspan(min(swept), max(swept), color=GOLD, alpha=0.10, lw=0)
+            ax1.axvspan(min(swept), max(swept), color=GOLD, alpha=0.10, lw=0)
 
-    # ---- panel 1: relative error (log) ----
-    for j, (lo, hi) in enumerate(spans):
-        ax1.axvspan(lo, hi, color=SHADE, alpha=0.11, lw=0,
-                    label="swept branch point (Option 1 target)" if j == 0 else None)
-    ax1.axhline(FLOOR, color=MUTED, lw=1.0, ls=(0, (4, 3)))
-    ax1.text(x2[2], FLOOR * 1.5, "machine precision", color=MUTED, fontsize=9,
-             va="bottom")
-    ax1.semilogy(x2, rel, color=BLUE, lw=1.6, solid_capstyle="round",
-                 label="slice thimble vs oracle")
-    ax1.legend(frameon=False, loc="lower right", fontsize=9.5)
-    ax1.set_ylabel(r"rel. error  vs oracle", color=INK2)
-    ax1.set_xlabel(r"slice position  $x_2$", color=INK2)
-    ax1.set_ylim(FLOOR * 0.4, 5.0)
-    ax1.yaxis.set_major_locator(LogLocator(base=10, numticks=8))
-    ax1.grid(True, which="major", color=MUTED, alpha=0.14, lw=0.6)
-    ax1.set_axisbelow(True)
-    for s in ("top", "right"):
-        ax1.spines[s].set_visible(False)
+        # ---- row 1: relative error + estimate + indicator ----
+        ax1.axhline(FLOOR, color=MUTED, lw=1.0, ls=(0, (4, 3)))
+        ax1.semilogy(x2, d["err_th"], color=BLUE, lw=1.5, solid_capstyle="round",
+                     label="thimble err vs referee" if j == 0 else None)
+        ax1.semilogy(x2, d["est_th"], color=BLUE, lw=1.0, ls=":",
+                     label="thimble error estimate (100× indicator + quadrature)" if j == 0 else None)
+        ax1.semilogy(x2, [max(i, 1e-16) for i in d["ind"]], color=GOLD, lw=1.4,
+                     label="branch-point indicator" if j == 0 else None)
+        ax1.semilogy(x2, [max(e, 1e-16) for e in d["err_rc"]], color=ORANGE, lw=1.2,
+                     ls="--", label="RC err vs referee" if j == 0 else None)
+        ax1.set_ylabel("relative error / bound" if j == 0 else "", color=INK2)
+        ax1.set_ylim(1e-16, 30)
+        ax1.yaxis.set_major_locator(LogLocator(base=10, numticks=9))
+        ax1.grid(True, which="major", color=MUTED, alpha=0.14, lw=0.6)
+        ax1.set_axisbelow(True)
+        for s in ("top", "right"):
+            ax1.spines[s].set_visible(False)
+        if j == 0:
+            ax1.legend(frameon=False, loc="upper left", fontsize=8.2, ncol=1)
 
-    # mass markers (thin verticals; a small tick label near the x-axis)
-    for b in MASS_B:
-        ax1.axvline(b, color=SHADE, lw=1.0, alpha=0.55)
-        ax0.axvline(b, color=SHADE, lw=1.0, alpha=0.55)
-        ax0.text(b, ax0.get_ylim()[0] + 0.05, r"$\times$", color="#b8860b",
-                 fontsize=12, va="bottom", ha="center")
-    ax0.text(-2.85, ax0.get_ylim()[1] * 0.86,
-             r"$\times$ = mass ($x_2 = b_j$)", color="#a35a00", fontsize=9,
-             va="center", ha="left")
+        # ---- row 2: timing ----
+        ax2.semilogy(x2, [max(t, 1e-3) for t in d["t_th"]], color=BLUE, lw=1.4,
+                     label="thimble" if j == 0 else None)
+        ax2.semilogy(x2, [max(t, 1e-3) for t in d["t_rc"]], color=ORANGE, lw=1.4,
+                     label="RC (exact)" if j == 0 else None)
+        med_th, med_rc = median(d["t_th"]), median(d["t_rc"])
+        ax2.axhline(med_th, color=BLUE, lw=0.8, alpha=0.5)
+        ax2.axhline(med_rc, color=ORANGE, lw=0.8, alpha=0.5)
+        ax2.set_ylabel("time / slice  (ms)" if j == 0 else "", color=INK2)
+        ax2.set_xlabel(r"slice position  $x_2$")
+        ax2.grid(True, which="major", color=MUTED, alpha=0.14, lw=0.6)
+        ax2.set_axisbelow(True)
+        for s in ("top", "right"):
+            ax2.spines[s].set_visible(False)
+        if j == 0:
+            ax2.legend(frameon=False, loc="upper right", fontsize=9)
+        ax2.text(0.02, 0.06,
+                 f"median: thimble {med_th*1e3:.0f} µs vs RC {med_rc*1e3:.0f} µs "
+                 f"({med_th/max(med_rc, 1e-9):.0f}×)",
+                 transform=ax2.transAxes, fontsize=9, color=INK2, va="bottom")
+        # mass pinches
+        for b in MASS_B:
+            for ax in (ax0, ax1, ax2):
+                ax.axvline(b, color=GOLD, lw=1.0, alpha=0.45)
 
-    # annotate the two regimes
-    ax1.annotate(
-        "exact where no branch point is swept\n(machine precision, ~$10^{-14}$)",
-        xy=(2.6, 2e-14), xytext=(1.4, 5e-11),
-        color=INK2, fontsize=9.5,
-        arrowprops=dict(arrowstyle="->", color=MUTED, lw=1.0),
-    )
-    ax1.annotate(
-        "thimble misses a branch-cut (Hankel) term\n"
-        "(oracle also unconverged near the pinches)",
-        xy=(-0.6, 4e-1), xytext=(-1.65, 3.0),
-        color="#a35a00", fontsize=9, ha="left", va="top",
-        arrowprops=dict(arrowstyle="->", color=SHADE, lw=1.1),
-    )
-    # the smooth exponential Stokes turn-on on the negative side
-    ax1.annotate(
-        "smooth (Stokes)\nturn-on",
-        xy=(-1.78, 4e-11), xytext=(-2.95, 2e-7),
-        color=INK2, fontsize=8.5, ha="left",
-        arrowprops=dict(arrowstyle="->", color=MUTED, lw=0.9),
-    )
+    axes[0][0].text(0.02, 0.06, r"$\times$ = mass pinch ($x_2 = b_j$)",
+                    transform=axes[0][0].transAxes, fontsize=8.5, color=GOLD)
 
-    # speed callout
-    fig.text(
-        0.1, 0.005,
-        f"single-thread inner solve:  thimble {med_th*1e3:.0f} µs   "
-        f"vs   mesh oracle {med_me*1e3:.0f} µs   "
-        f"(≈{speedup:.0f}× faster), ω = 3",
-        fontsize=9.5, color=INK2,
-    )
-
+    fig.suptitle("The Cartesian-slice inner kernel: thimble (A0) vs the exact RC kernel (A0'), "
+                 "graded against the independent referee",
+                 fontsize=13.5, color=INK, x=0.075, ha="left", y=0.965)
+    fig.text(0.075, 0.935,
+             "The thimble is machine-exact where no log branch point is swept and misses the "
+             "branch-cut (Hankel) term where one is; the indicator bounds that deficit. "
+             "RC is exact everywhere, an order of magnitude faster.",
+             fontsize=10, color=INK2)
     fig.savefig(OUT, dpi=150, bbox_inches="tight", facecolor=SURF)
     print(f"wrote {OUT}")
-    print(f"median times: thimble {med_th*1e3:.1f} us, mesh {med_me*1e3:.1f} us, "
-          f"speedup {speedup:.1f}x")
-    def in_span(x):
-        return any(lo <= x <= hi for lo, hi in spans)
-
-    unswept = [r for x, r, o in zip(x2, rel, ok) if o and not in_span(x)]
-    print(f"slices: {sum(ok)}/{len(ok)} thimble-ok; "
-          f"swept spans: {[(round(a, 2), round(b, 2)) for a, b in spans]}; "
-          f"un-swept max rel err {max(unswept):.1e}")
+    for w in omegas:
+        d = data[w]
+        print(f"omega={w:g}: median thimble/RC time {median(d['t_th'])*1e3:.1f}/"
+              f"{median(d['t_rc'])*1e3:.1f} us; max thimble err {max(e for e in d['err_th'] if not math.isnan(e)):.2e}; "
+              f"max RC err {max(d['err_rc']):.2e}")
 
 
 if __name__ == "__main__":

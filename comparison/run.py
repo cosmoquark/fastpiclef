@@ -130,13 +130,25 @@ def freq_comparison(y=1.0, w_grid=None, fiona_threads=None):
     )
     fpl_t = time.perf_counter() - t0
 
+    # fastpiclef: the exact RC slice solver (the field solver, here on the
+    # single mass) — same protocol, machine precision at every frequency.
+    t0 = time.perf_counter()
+    F_slice = np.array(
+        [complex(fpl.PointMassField([(0.0, 0.0, 1.0)], beta=(y, 0.0))
+                 .solve(omega=float(w), method="slice").amplification)
+         for w in w_grid]
+    )
+    slice_t = time.perf_counter() - t0
+
     # FIONA: adaptive NUFFT3 batched over the grid (its native fast mode).
     F_fiona, fiona_t = fiona_driver.fiona_point_mass_sweep(y, w_grid, threads=1)
 
     err_fpl = np.abs(np.abs(F_fpl) - np.abs(F_nd)) / np.abs(F_nd)
+    err_slice = np.abs(np.abs(F_slice) - np.abs(F_nd)) / np.abs(F_nd)
     err_fiona = np.abs(np.abs(F_fiona) - np.abs(F_nd)) / np.abs(F_nd)
     times = {
-        f"fastpiclef ({w_grid.size} w, 1 thr)": fpl_t,
+        f"fastpiclef polar thimble ({w_grid.size} w, 1 thr)": fpl_t,
+        f"fastpiclef slice ({w_grid.size} w, 1 thr)": slice_t,
         f"FIONA ({w_grid.size} w, 1 thr)": fiona_t,
     }
     if fiona_threads and fiona_threads > 1:
@@ -144,27 +156,31 @@ def freq_comparison(y=1.0, w_grid=None, fiona_threads=None):
         times[f"FIONA ({w_grid.size} w, {fiona_threads} thr)"] = fiona_tN
     return {
         "y": y, "w": w_grid,
-        "F_fpl": F_fpl, "F_fiona": F_fiona, "F_nd": F_nd,
-        "err_fpl": err_fpl, "err_fiona": err_fiona, "times": times,
+        "F_fpl": F_fpl, "F_slice": F_slice, "F_fiona": F_fiona, "F_nd": F_nd,
+        "err_fpl": err_fpl, "err_slice": err_slice, "err_fiona": err_fiona,
+        "times": times,
     }
 
 
 def plot_freq_overlay(ax, res):
     w = res["w"]
     ax.plot(w, np.abs(res["F_nd"]), "k-", lw=2.4, alpha=0.35, label="Nakamura-Deguchi (exact)")
-    ax.plot(w, np.abs(res["F_fpl"]), lw=1.5, label="fastpiclef (thimble)")
+    ax.plot(w, np.abs(res["F_fpl"]), lw=1.5, label="fastpiclef (polar thimble)")
+    ax.plot(w, np.abs(res["F_slice"]), lw=1.1, ls=(0, (1, 2)), label="fastpiclef (slice, exact)")
     ax.plot(w, np.abs(res["F_fiona"]), "--", lw=1.2, label="FIONA (NUFFT3)")
     ax.set(xscale="log", xlabel="frequency  w", ylabel="|F|  amplification",
-           title=f"Point mass |F(w)|, y={res['y']:g} -- 3-way vs the exact closed form")
+           title=f"Point mass |F(w)|, y={res['y']:g} -- 4-way vs the exact closed form")
     ax.legend()
 
 
 def plot_freq_error(ax, res):
     w = res["w"]
-    ax.loglog(w, np.maximum(res["err_fpl"], 1e-16), lw=1.6, label="fastpiclef (thimble)")
+    ax.loglog(w, np.maximum(res["err_fpl"], 1e-16), lw=1.6, label="fastpiclef (polar thimble)")
+    ax.loglog(w, np.maximum(res["err_slice"], 1e-16), ls=(0, (1, 2)), lw=1.2,
+              label="fastpiclef (slice, exact)")
     ax.loglog(w, np.maximum(res["err_fiona"], 1e-16), "--", lw=1.2, label="FIONA (NUFFT3)")
     ax.set(xlabel="frequency  w", ylabel="rel. error in |F| vs exact",
-           title="Accuracy vs the external truth (both codes)")
+           title="Accuracy vs the external truth (all codes)")
     ax.legend()
 
 
@@ -174,13 +190,36 @@ FIELD_LENSES = [(0.6, 0.0, 0.4), (-0.5, 0.4, 0.3), (0.1, -0.6, 0.35)]
 FIELD_SOURCE = (0.2, 0.1)
 
 
+def _threaded_slice_time(lenses, source, omega):
+    """All-threads wall time of one field solve, measured in a subprocess with
+    the thread pins removed (rayon reads RAYON_NUM_THREADS at pool init, so
+    the pinned harness process cannot measure this itself)."""
+    import subprocess
+    import sys
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(RESULTS)))
+    code = (
+        "import time, fastpiclef as fpl\n"
+        f"f = fpl.PointMassField({lenses!r}, beta={source!r})\n"
+        f"f.solve(omega={omega!r})\n"  # warm (thread-pool init)
+        "t0 = time.perf_counter()\n"
+        f"f.solve(omega={omega!r})\n"
+        "print(time.perf_counter() - t0)\n"
+    )
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("RAYON_NUM_THREADS", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS")}
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                         text=True, env=env, cwd=root, check=True)
+    return float(out.stdout.strip().splitlines()[-1])
+
+
 def field_comparison(lenses=None, source=None, w_fiona=None, w_mesh=None, mesh_delta=0.03):
     """Phase 3 / C2 -- the genuinely 2D field of point masses (non-axisymmetric,
-    no closed form). FIONA (NUFFT3) handles all w robustly; our only field path
-    is the mesh (the polar/thimble fast path needs axisymmetry, which the field
-    lacks). Trust is calibrated by C1 (both codes machine-checked against the
-    point-mass closed form); here FIONA is the reference and we measure where the
-    mesh can follow it. The mesh diverges above low w -- the evidence for Path 2.
+    no closed form). The *slice* solver (exact RC in both variables; validated
+    against Nakamura-Deguchi on the single mass) is the reference; FIONA is
+    graded against it, the geometric-optics solver tracks it at high w, and the
+    mesh's divergence is kept as history. The mesh is not a field solver: it
+    diverges on log potentials, which is why Path 2 exists.
     """
     from . import fiona_driver
 
@@ -198,9 +237,18 @@ def field_comparison(lenses=None, source=None, w_fiona=None, w_mesh=None, mesh_d
     F_fiona, fiona_t = fiona_driver.fiona_field(lenses, source, w_fiona)
     F_ref_at_mesh, _ = fiona_driver.fiona_field(lenses, source, w_mesh)
 
+    # fastpiclef slice: the exact reference (independent per-frequency solves;
+    # warm-starting is not implemented — see the roadmap).
+    slice_t = np.full(w_fiona.size, np.nan)
+    F_slice = np.full(w_fiona.size, np.nan, dtype=complex)
+    for i, w in enumerate(w_fiona):
+        t0 = time.perf_counter()
+        r = fpl.PointMassField(lenses=lenses, beta=source).solve(omega=float(w), method="slice")
+        F_slice[i] = complex(r.amplification)
+        slice_t[i] = time.perf_counter() - t0
+
     # Path 2 / M2: the stationary-phase (geometric-optics) solver -- fast
-    # (O(#images)), exact as w -> infinity away from caustics. Its high-w
-    # accuracy is anchored by the N=1 Nakamura-Deguchi match.
+    # (O(#images)), exact as w -> infinity away from caustics.
     pmf = fpl.PointMassField(lenses=lenses, beta=source)
     t0 = time.perf_counter()
     F_geo = np.array([complex(pmf.geometric(float(w)).amplification) for w in w_fiona])
@@ -218,11 +266,16 @@ def field_comparison(lenses=None, source=None, w_fiona=None, w_mesh=None, mesh_d
         except Exception:  # noqa: BLE001  (mesh may fail outright at high w)
             pass
     err_mesh = np.abs(np.abs(F_mesh) - np.abs(F_ref_at_mesh)) / np.abs(F_ref_at_mesh)
+    err_fiona = np.abs(np.abs(F_fiona) - np.abs(F_slice)) / np.abs(F_slice)
+    err_geo = np.abs(np.abs(F_geo) - np.abs(F_slice)) / np.abs(F_slice)
+    t_threaded = _threaded_slice_time(lenses, source, float(w_fiona[-1]))
     n_images = len(pmf.images())
     return {
         "lenses": lenses, "source": source, "n_images": n_images,
         "w_fiona": w_fiona, "F_fiona": F_fiona, "fiona_t": fiona_t,
-        "F_geo": F_geo, "geo_t": geo_t,
+        "F_slice": F_slice, "slice_t": slice_t, "slice_t_threaded": t_threaded,
+        "err_fiona": err_fiona,
+        "F_geo": F_geo, "geo_t": geo_t, "err_geo": err_geo,
         "w_mesh": w_mesh, "F_mesh": F_mesh, "F_ref_at_mesh": F_ref_at_mesh,
         "err_mesh": err_mesh, "mesh_t": mesh_t,
     }
@@ -231,6 +284,8 @@ def field_comparison(lenses=None, source=None, w_fiona=None, w_mesh=None, mesh_d
 def plot_field(ax, res):
     ax.plot(res["w_fiona"], np.abs(res["F_fiona"]), "-o", ms=3, color="C1",
             label="FIONA (NUFFT3), all w")
+    ax.plot(res["w_fiona"], np.abs(res["F_slice"]), "-", lw=2.4, alpha=0.35, color="C0",
+            label="fastpiclef slice (exact reference)")
     ax.plot(res["w_fiona"], np.abs(res["F_geo"]), ":", lw=2, color="C0",
             label="fastpiclef geometric (M2)")
     ok = res["err_mesh"] < 0.1
@@ -240,7 +295,7 @@ def plot_field(ax, res):
             label="fastpiclef mesh (diverged)")
     ax.set(xscale="log", xlabel="frequency  w", ylabel="|F|  amplification",
            title=f"Field of {res['n_images']} images ({len(res['lenses'])} masses) "
-                 f"-- mesh & geometric vs FIONA")
+                 f"-- exact slice reference, FIONA, geometric, mesh")
     ax.legend()
 
 

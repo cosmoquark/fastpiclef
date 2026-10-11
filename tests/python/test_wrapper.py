@@ -81,14 +81,46 @@ def test_errors():
             raise AssertionError(f"expected ValueError for {bad}")
 
 
-def test_point_mass_field_runs_and_free_limit():
-    # Empty field ⇒ free space, amplification = 1 (fast).
+def test_point_mass_field_free_limit():
+    # Empty field ⇒ free space, amplification = 1 (exact by construction now:
+    # the RC slice solver is the default).
     empty = fpl.PointMassField([], beta=(0.4, 0.0))
-    assert abs(empty.solve(omega=2.0, delta=0.05, domain=(-6.0, 6.0)).amplification - 1.0) < 1e-3
-    # A small real field returns a finite, order-unity amplification (coarse).
+    r = empty.solve(omega=2.0)
+    assert r.method == "slice"
+    assert abs(r.amplification - 1.0) < 1e-10, r
+
+
+def test_point_mass_field_matches_nakamura_deguchi():
+    # Unit mass at the origin, source (0.5, 0): raw integral vs the 30-digit
+    # Nakamura-Deguchi closed form (comparison/referee.py::slice_raw_from_nd,
+    # emitted 2026-10-11). The phase relation and method are validated in
+    # tests/field.rs; this checks the Python path end to end.
+    f = fpl.PointMassField([(0.0, 0.0, 1.0)], beta=(0.5, 0.0))
+    r = f.solve(omega=1.0)
+    want = 1.11515184895840158 + 10.6271092478315978j
+    assert abs(r.integral - want) / abs(want) < 1e-12, r
+
+
+def test_point_mass_field_methods():
     field = fpl.PointMassField([(1.0, 0.5, 0.1), (-0.8, -0.6, 0.1)], beta=(0.3, 0.0))
-    r = field.solve(omega=2.0, delta=0.06, domain=(-6.0, 6.0))
-    assert math.isfinite(abs(r.amplification)) and 0.2 < abs(r.amplification) < 5.0
+    default = field.solve(omega=2.0)
+    explicit = field.solve(omega=2.0, method="slice")
+    assert default.method == "slice"
+    assert explicit.method == "slice"
+    assert default.integral == explicit.integral
+    # The legacy mesh solver stays callable (coarse settings; it is not the
+    # trustworthy path on log potentials — that is why the default changed).
+    mesh = field.solve(omega=2.0, method="mesh", delta=0.06, domain=(-6.0, 6.0))
+    assert mesh.method == "mesh"
+    assert math.isfinite(abs(mesh.amplification))
+    # Unknown methods and bad frequencies are ValueError.
+    for bad in [dict(omega=2.0, method="nope"), dict(omega=-1.0)]:
+        try:
+            field.solve(**bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected ValueError for {bad}")
 
 
 if __name__ == "__main__":
