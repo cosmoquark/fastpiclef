@@ -54,9 +54,15 @@ pandas = "*"
 finufft = "*"
 mpmath = "*"
 jax = ">=0.10.2,<0.11"
+# wolensing's runtime deps (P4; refs/wolensing is imported via sys.path).  Its
+# `fast_histogram` is PyPI-only, hence the pypi section below.
+lenstronomy = "*"
+astropy = "*"
+tqdm = "*"
 
 [tool.pixi.feature.comparison.pypi-dependencies]
 plind = "*"
+fast_histogram = "*"
 
 [tool.pixi.environments]
 default = { solve-group = "main" }
@@ -88,4 +94,9 @@ bench = { cmd = "python -m comparison.run", depends-on = ["build"] }
 bench-p3 = { cmd = "python -m comparison.convergence", depends-on = ["build"] }
 difficult = { cmd = "python -m comparison.difficult_cases", depends-on = ["build"] }
 glworia = { cmd = "python -m comparison.glworia_compare", depends-on = ["build"] }
+# P4:
+high-omega = { cmd = "python -m comparison.high_omega", depends-on = ["build"] }
+geo-study = { cmd = "python -m comparison.geometric_high_omega", depends-on = ["build"] }
+sp-correction = { cmd = "python -m comparison.sp_correction", depends-on = ["build"] }
+wolensing = { cmd = "python -m comparison.wolensing_compare", depends-on = ["build"] }
 profiles-fiona = { cmd = "python comparison/profiles_fiona_check.py", depends-on = ["build"] }

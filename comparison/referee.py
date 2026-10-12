@@ -66,7 +66,11 @@ def point_mass_exact(w, y):
     xm = 0.5 * (y + math.sqrt(y * y + 4.0))
     phi_m = 0.5 * (xm - y) ** 2 - math.log(xm)
     prefac = mp.e ** (mp.pi * w / 4 + 1j * (w / 2) * (mp.log(w / 2) - 2 * phi_m))
-    val = prefac * mp.gamma(1 - 1j * w / 2) * mp.hyp1f1(1j * w / 2, 1, 1j * w * y * y / 2)
+    # maxterms: the 1F1 parameter grows like w/2, so the series needs O(w)
+    # terms; the default cap fails for w = 1e4 at y ~ 0.9 (P4.1).  A generous
+    # cap costs nothing when the series converges earlier.
+    val = prefac * mp.gamma(1 - 1j * w / 2) * mp.hyp1f1(
+        1j * w / 2, 1, 1j * w * y * y / 2, maxterms=10**6)
     return complex(val)
 
 

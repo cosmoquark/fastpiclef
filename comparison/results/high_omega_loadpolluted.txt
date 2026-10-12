@@ -1,0 +1,6 @@
+== point mass, y=1 (external ND truth) ==
+  omega   wall [s]   steps  s/step [ms]  err vs ND    geo err
+     10      3.047    2766        1.102    7.5e-16    3.3e-04
+     30      4.595    4366        1.052    1.8e-15    2.1e-03
+    100     27.814   11406        2.439    1.8e-14    2.7e-04
+    300    202.410   29966        6.755    2.5e-14    5.2e-05
