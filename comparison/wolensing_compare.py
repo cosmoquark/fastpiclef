@@ -46,6 +46,10 @@ def main():
     os.makedirs(RESULTS, exist_ok=True)
     rows = []
     cases = [
+        ("sis", 0.1,
+         lambda: fpl.LensField([fpl.SISComp(0.0, 0.0, 1.0)], beta=(0.1, 0.0)),
+         ["SIS"], [{"theta_E": 1.0, "center_x": 0.0, "center_y": 0.0}],
+         ("sis", (1.0,))),
         ("sis", 0.5,
          lambda: fpl.LensField([fpl.SISComp(0.0, 0.0, 1.0)], beta=(0.5, 0.0)),
          ["SIS"], [{"theta_E": 1.0, "center_x": 0.0, "center_y": 0.0}],

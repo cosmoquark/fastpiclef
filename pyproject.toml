@@ -100,4 +100,5 @@ geo-study = { cmd = "python -m comparison.geometric_high_omega", depends-on = ["
 sp-correction = { cmd = "python -m comparison.sp_correction", depends-on = ["build"] }
 hybrid-check = { cmd = "python -m comparison.hybrid_check", depends-on = ["build"] }
 wolensing = { cmd = "python -m comparison.wolensing_compare", depends-on = ["build"] }
+many-masses = { cmd = "cargo run --release --example many_masses --", depends-on = ["build"] }
 profiles-fiona = { cmd = "python comparison/profiles_fiona_check.py", depends-on = ["build"] }
