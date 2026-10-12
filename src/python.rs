@@ -918,6 +918,40 @@ fn component_from_any(obj: &Bound<'_, PyAny>) -> PyResult<Component> {
     ))
 }
 
+/// The raw inner RC slice `G(x2) = int dz0 exp(i omega phi(z0, x2))` for a
+/// point-mass field — the exact slice kernel, supporting complex `x2` inside
+/// the validated sector (`Im((x2-b_j)^2) > 0`).  `amplification` is normalised
+/// by the 1D free-space factor; the raw integral is the fundamental quantity.
+#[pyfunction]
+#[pyo3(signature = (lenses, beta, x2, omega, *, tol=None, margin=None, tail_angle=None))]
+fn slice_inner_rc(
+    lenses: Vec<(f64, f64, f64)>,
+    beta: (f64, f64),
+    x2: (f64, f64),
+    omega: f64,
+    tol: Option<f64>,
+    margin: Option<f64>,
+    tail_angle: Option<f64>,
+) -> PyResult<PyOutput> {
+    let mut cfg = SliceConfig { omega, ..SliceConfig::default() };
+    if let Some(t) = tol {
+        cfg.tol_inner = t;
+    }
+    if let Some(m) = margin {
+        cfg.margin = m;
+    }
+    if let Some(a) = tail_angle {
+        cfg.tail_angle = a;
+    }
+    let field = PointMassField {
+        beta: [beta.0, beta.1],
+        lenses,
+    };
+    let o = crate::slice::slice_inner_rc(&field, Complex64::new(x2.0, x2.1), &cfg)
+        .map_err(map_err)?;
+    Ok(make_output(1, omega, o.value, o.error, "slice-inner", 0))
+}
+
 /// General lens field: stars/halos (axisymmetric profiles) plus the external
 /// macro model (`kappa`, `gamma1`, `gamma2`).  `solve`/`sweep`/`map` run the
 /// same exact RC engine (P2a); `images`/`geometric` give the real-space
@@ -1101,5 +1135,6 @@ fn fastpiclef(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySisComp>()?;
     m.add_class::<PyCisComp>()?;
     m.add_class::<PyNfwComp>()?;
+    m.add_function(wrap_pyfunction!(slice_inner_rc, m)?)?;
     Ok(())
 }

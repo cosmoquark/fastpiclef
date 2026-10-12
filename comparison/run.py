@@ -42,7 +42,9 @@ def grid_comparison(plind_points=15):
 
     fastpiclef is the truth (validated thimble); P-LPI and plind are graded
     against it across the grid. plind is subsampled (it is ~2 s/point here) and
-    its full-grid time is extrapolated.
+    its full-grid time is extrapolated.  P3 adds the *shared-contour* 1D batch
+    (`RationalLens.grid`, method="rc") as fastpiclef's grid answer — the
+    protocol-matching competitor to P-LPI's batched C++ run.
     """
     kappa, omega = plpi_driver.PLPI_KAPPA, plpi_driver.PLPI_NU
     mu, F_plpi_raw, plpi_t1 = plpi_driver.run_plpi_1d(threads=1)
@@ -55,6 +57,15 @@ def grid_comparison(plind_points=15):
                  .solve(omega=omega, method="auto").integral) for m in mu]
     )
     fpl_t = time.perf_counter() - t0
+
+    # fastpiclef: the shared-contour 1D batch (rc_1d_batch) over the same grid.
+    t0 = time.perf_counter()
+    integ, _, _ = fpl.RationalLens(beta=0.0, kappa=kappa).grid(
+        [float(m) for m in mu], omega, method="rc")
+    F_grid_raw = np.array(integ, dtype=complex)
+    fpl_grid_t = time.perf_counter() - t0
+    err_fpl_grid = np.abs(F_grid_raw - F_fpl_raw) / np.abs(F_fpl_raw)
+    fpl_grid_tN = _threaded_grid_time(kappa, omega, [float(m) for m in mu])
 
     # plind, subsampled; per-point time -> extrapolated grid time.
     idx = np.linspace(0, len(mu) - 1, plind_points).round().astype(int)
@@ -78,8 +89,11 @@ def grid_comparison(plind_points=15):
         "F_plpi": _normF(F_plpi_raw, omega),
         "F_plind": _normF(F_plind_raw, omega),
         "err_plpi": err_plpi, "err_plind": err_plind,
+        "err_fpl_grid": err_fpl_grid,
         "times": {
             "fastpiclef (512, 1 thr)": fpl_t,
+            "fastpiclef grid rc (512, 1 thr)": fpl_grid_t,
+            f"fastpiclef grid rc (512, {os.cpu_count()} thr)": fpl_grid_tN,
             "P-LPI (512, 1 thr)": plpi_t1,
             f"P-LPI (512, {os.cpu_count()} thr)": plpi_tN,
             "plind/pt": plind_per_pt,
@@ -101,9 +115,33 @@ def plot_grid_overlay(ax, res):
 def plot_grid_error(ax, res):
     ax.semilogy(res["mu"], np.maximum(res["err_plpi"], 1e-16), lw=1, label="P-LPI")
     ax.semilogy(res["mu"][res["idx"]], np.maximum(res["err_plind"], 1e-16), "o", ms=4, label="plind")
+    ax.semilogy(res["mu"], np.maximum(res["err_fpl_grid"], 1e-16), lw=1.2, ls=(0, (1, 2)),
+                label="fastpiclef grid (rc batch) vs thimble")
     ax.set(xlabel="source position  mu", ylabel="rel. error vs fastpiclef thimble",
            title="Accuracy across the grid", ylim=(1e-9, 1e-1))
     ax.legend()
+
+
+def _threaded_grid_time(kappa, omega, mu):
+    """All-threads wall time of the shared-contour 1D grid (`RationalLens.grid`,
+    rc), measured in a subprocess with the thread pins removed."""
+    import subprocess
+    import sys
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(RESULTS)))
+    code = (
+        "import time, fastpiclef as fpl\n"
+        f"l = fpl.RationalLens(beta=0.0, kappa={kappa!r})\n"
+        f"l.grid({mu!r}, {omega!r}, method='rc')\n"
+        "t0 = time.perf_counter()\n"
+        f"l.grid({mu!r}, {omega!r}, method='rc')\n"
+        "print(time.perf_counter() - t0)\n"
+    )
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("RAYON_NUM_THREADS", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS")}
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                         text=True, env=env, cwd=root, check=True)
+    return float(out.stdout.strip().splitlines()[-1])
 
 
 def freq_comparison(y=1.0, w_grid=None, fiona_threads=None):
@@ -181,6 +219,95 @@ def plot_freq_error(ax, res):
     ax.loglog(w, np.maximum(res["err_fiona"], 1e-16), "--", lw=1.2, label="FIONA (NUFFT3)")
     ax.set(xlabel="frequency  w", ylabel="rel. error in |F| vs exact",
            title="Accuracy vs the external truth (all codes)")
+    ax.legend()
+
+
+def fiona_grid_contest(ys=(0.2, 0.5, 1.0, 2.0), w_grid=None, fiona_threads=None):
+    """P3.2 — FIONA's native (w, y) protocol vs our batched entry points.
+
+    FIONA batches frequencies per source; ours batches frequencies per source
+    (`PointMassField.sweep`) and sources per frequency (`PointMassField.map`).
+    Everything is graded against the Nakamura-Deguchi closed form (external).
+    """
+    from . import fiona_driver
+    from .referee import point_mass_exact
+
+    if w_grid is None:
+        w_grid = np.geomspace(0.5, 30.0, 12)
+    w_grid = np.asarray(w_grid, dtype=float)
+    ys = np.asarray(ys, dtype=float)
+
+    # FIONA: one solver call per source (its native batched-frequency mode).
+    t0 = time.perf_counter()
+    F_fiona = np.array([
+        fiona_driver.fiona_point_mass_sweep(float(y), w_grid, threads=1)[0] for y in ys
+    ])
+    fiona_t = time.perf_counter() - t0
+    fiona_tN = None
+    if fiona_threads and fiona_threads > 1:
+        t0 = time.perf_counter()
+        for y in ys:
+            fiona_driver.fiona_point_mass_sweep(float(y), w_grid, threads=fiona_threads)
+        fiona_tN = time.perf_counter() - t0
+
+    # ours: batched frequency sweeps (one per source)
+    t0 = time.perf_counter()
+    F_sweep = np.array([
+        np.array(fpl.PointMassField([(0.0, 0.0, 1.0)], beta=(float(y), 0.0))
+                 .sweep(list(w_grid)).amplification) for y in ys
+    ])
+    sweep_t = time.perf_counter() - t0
+
+    # ours: batched source maps (one per frequency)
+    t0 = time.perf_counter()
+    F_map = np.empty((ys.size, w_grid.size), dtype=complex)
+    for i, w in enumerate(w_grid):
+        m = fpl.PointMassField([(0.0, 0.0, 1.0)], beta=(0.0, 0.0)).map(
+            [float(y) for y in ys], [0.0], float(w))
+        F_map[:, i] = [complex(m.amplification[j][0]) for j in range(ys.size)]
+    map_t = time.perf_counter() - t0
+
+    F_nd = np.array([[point_mass_exact(float(w), float(y)) for w in w_grid] for y in ys])
+
+    def err(F):
+        return np.abs(np.abs(F) - np.abs(F_nd)) / np.abs(F_nd)
+
+    times = {
+        f"FIONA ({ys.size}x{w_grid.size}, 1 thr)": fiona_t,
+        f"fastpiclef sweep ({ys.size}x{w_grid.size}, 1 thr)": sweep_t,
+        f"fastpiclef map ({ys.size}x{w_grid.size}, 1 thr)": map_t,
+    }
+    if fiona_tN is not None:
+        times[f"FIONA ({ys.size}x{w_grid.size}, {fiona_threads} thr)"] = fiona_tN
+    return {
+        "ys": ys, "w": w_grid,
+        "F_fiona": F_fiona, "F_sweep": F_sweep, "F_map": F_map, "F_nd": F_nd,
+        "err_fiona": err(F_fiona), "err_sweep": err(F_sweep), "err_map": err(F_map),
+        "times": times,
+    }
+
+
+def plot_fiona_grid(ax, res):
+    w = res["w"]
+    y0 = res["ys"][0]
+    ax.plot(w, np.abs(res["F_nd"][0]), "k-", lw=2.4, alpha=0.35, label="Nakamura-Deguchi (exact)")
+    ax.plot(w, np.abs(res["F_fiona"][0]), "--", lw=1.2, label=f"FIONA (y={y0:g})")
+    ax.plot(w, np.abs(res["F_sweep"][0]), lw=1.5, label=f"fastpiclef sweep (y={y0:g})")
+    ax.plot(w, np.abs(res["F_map"][0]), ls=(0, (1, 2)), lw=1.2, label=f"fastpiclef map (y={y0:g})")
+    ax.set(xscale="log", xlabel="frequency  w", ylabel="|F|  amplification",
+           title="(w, y) grid protocol — first source row")
+    ax.legend()
+
+
+def plot_fiona_grid_error(ax, res):
+    w = res["w"]
+    ax.loglog(w, np.maximum(res["err_fiona"].max(axis=0), 1e-16), "--", lw=1.2, label="FIONA")
+    ax.loglog(w, np.maximum(res["err_sweep"].max(axis=0), 1e-16), lw=1.5,
+              label="fastpiclef sweep")
+    ax.loglog(w, np.maximum(res["err_map"].max(axis=0), 1e-16), ls=(0, (1, 2)), lw=1.2,
+              label="fastpiclef map")
+    ax.set(xlabel="frequency  w", ylabel="max rel. error in |F| over y",
+           title="(w, y) grid: accuracy vs the exact closed form")
     ax.legend()
 
 
@@ -421,6 +548,8 @@ def main():
         print(f"  time  {k:<32} {v:.3f} s")
     print(f"  accuracy vs fastpiclef thimble:  P-LPI median {np.median(res['err_plpi']):.1e} "
           f"max {res['err_plpi'].max():.1e} | plind median {np.median(res['err_plind']):.1e}")
+    print(f"  fastpiclef rc batch vs thimble:  median {np.median(res['err_fpl_grid']):.1e} "
+          f"max {res['err_fpl_grid'].max():.1e}")
     fig, (a1, a2) = plt.subplots(1, 2, figsize=(12.5, 4.6))
     plot_grid_overlay(a1, res)
     plot_grid_error(a2, res)
@@ -446,6 +575,35 @@ def main():
     pd.DataFrame(fres["times"].items(), columns=["quantity", "seconds"]).to_csv(
         os.path.join(RESULTS, "freq_times.csv"), index=False)
     print(f"  wrote results/freq.png and results/freq_times.csv")
+
+    print("\n== P3 / grid protocol: FIONA's (w,y) grid vs our sweep/map ==")
+    gres = fiona_grid_contest(fiona_threads=os.cpu_count())
+    for k, v in gres["times"].items():
+        print(f"  time  {k:<40} {v:.2f} s")
+    print(f"  max rel |F| err vs ND: FIONA {gres['err_fiona'].max():.1e} | "
+          f"sweep {gres['err_sweep'].max():.1e} | map {gres['err_map'].max():.1e}")
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(12.5, 4.6))
+    plot_fiona_grid(a1, gres)
+    plot_fiona_grid_error(a2, gres)
+    fig.tight_layout()
+    fig.savefig(os.path.join(RESULTS, "fiona_grid.png"), dpi=120)
+    pd.DataFrame(gres["times"].items(), columns=["quantity", "seconds"]).to_csv(
+        os.path.join(RESULTS, "fiona_grid_times.csv"), index=False)
+    rows = []
+    for i, y in enumerate(gres["ys"]):
+        for j, w in enumerate(gres["w"]):
+            rows.append(dict(
+                y=float(y), w=float(w),
+                absF_fiona=float(abs(gres["F_fiona"][i, j])),
+                absF_sweep=float(abs(gres["F_sweep"][i, j])),
+                absF_map=float(abs(gres["F_map"][i, j])),
+                absF_nd=float(abs(gres["F_nd"][i, j])),
+                err_fiona=float(gres["err_fiona"][i, j]),
+                err_sweep=float(gres["err_sweep"][i, j]),
+                err_map=float(gres["err_map"][i, j]),
+            ))
+    pd.DataFrame(rows).to_csv(os.path.join(RESULTS, "fiona_grid.csv"), index=False)
+    print("  wrote results/fiona_grid.png, fiona_grid_times.csv, fiona_grid.csv")
 
 
 if __name__ == "__main__":

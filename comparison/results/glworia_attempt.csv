@@ -1,0 +1,3 @@
+check,detail,value,extra
+live_vs_own_reference,"NFW kappa=3 y=0.1, N=200, T0_max=1000",0.7923511233612988,354.8483954720975
+y_smoothness,max relative jump between adjacent y values,0.8739699085310201,

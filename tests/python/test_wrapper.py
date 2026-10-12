@@ -228,6 +228,22 @@ def test_lens_field_geometric_macro_only():
     assert abs(abs(g.amplification) - 1.0 / math.sqrt(abs(l0 * l2))) < 1e-5
 
 
+def test_slice_inner_rc_free_space():
+    # The raw slice kernel with no lenses must reproduce the free-space 1D
+    # integral: G(x2) = sqrt(2 pi / w) e^{i pi/4} e^{i w (x2 - beta1)^2 / 2}.
+    w, beta, x2 = 3.0, (0.2, -0.1), (0.4, 0.0)
+    r = fpl.slice_inner_rc([], beta, x2, omega=w)
+    exact = (
+        cmath.sqrt(2 * math.pi / w)
+        * cmath.exp(1j * math.pi / 4)
+        * cmath.exp(1j * w * (x2[0] - beta[1]) ** 2 / 2)
+    )
+    assert abs(r.integral - exact) / abs(exact) < 1e-13, r
+    # And a real unit point mass at a pinch height stays finite and honest.
+    r2 = fpl.slice_inner_rc([(0.0, 0.5, 1.0)], (0.2, 0.0), (0.5, 0.0), omega=10.0)
+    assert math.isfinite(abs(r2.integral)) and r2.error < 1e-10, r2
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

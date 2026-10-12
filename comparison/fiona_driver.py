@@ -78,11 +78,12 @@ def point_mass_solver(threads=1, **kwargs):
     return fiona.FresnelNUFFT3(lens, **opts)
 
 
-def fiona_point_mass_sweep(y, w_grid, threads=1):
+def fiona_point_mass_sweep(y, w_grid, threads=1, **kwargs):
     """Sweep FIONA F(w, y) over a frequency grid at fixed source position y.
     Returns (F_complex_array, wall_seconds). Uses one solver call over the whole
-    grid (FIONA batches frequencies)."""
-    solver = point_mass_solver(threads=threads)
+    grid (FIONA batches frequencies).  `kwargs` go to FresnelNUFFT3 (e.g.
+    `gl_nodes_per_dim`, `nufft_tol` — the P3 convergence knobs)."""
+    solver = point_mass_solver(threads=threads, **kwargs)
     w = np.asarray(w_grid, dtype=float)
     y1 = np.array([float(y)])
     y2 = np.array([0.0])
@@ -92,19 +93,21 @@ def fiona_point_mass_sweep(y, w_grid, threads=1):
     return F, wall
 
 
-def fiona_field(lenses, source, w_grid, threads=1, soft=0.0):
+def fiona_field(lenses, source, w_grid, threads=1, soft=0.0, **kwargs):
     """FIONA F(w, y) over a frequency grid for a *field* of point masses (C2).
-    `source` is the 2D source position (y1, y2), matching fastpiclef's `beta`."""
+    `source` is the 2D source position (y1, y2), matching fastpiclef's `beta`.
+    `kwargs` go to FresnelNUFFT3 (P3 convergence knobs)."""
     fiona.set_num_threads(threads)
     y1, y2 = float(source[0]), float(source[1])
     lens = PointMassFieldLens(lenses, soft=soft)
-    solver = fiona.FresnelNUFFT3(
-        lens,
+    opts = dict(
         auto_R_from_gl_nodes=True,
         parallel_frequencies=(threads > 1),
         nufft_nthreads=threads,
         verbose=False,
     )
+    opts.update(kwargs)
+    solver = fiona.FresnelNUFFT3(lens, **opts)
     w = np.asarray(w_grid, dtype=float)
     t0 = time.perf_counter()
     F = np.asarray(solver(w, np.array([y1]), np.array([y2]))).reshape(-1)

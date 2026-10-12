@@ -7,6 +7,7 @@ refs/ is read-only, so we build a scratch copy with the env's C++ compiler.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -27,16 +28,34 @@ def mu_grid():
     return np.linspace(PLPI_MU_MIN, PLPI_MU_MAX, PLPI_NM)
 
 
-def run_plpi_1d(threads=1, keep=False):
+def run_plpi_1d(threads=1, keep=False, patches=None):
     """Build and run P-LPI code_1D; return (mu_grid, raw_integrals, wall_s).
 
     The reported wall time is the batched 512-point run only (not compilation).
     `threads` pins OMP_NUM_THREADS; `keep` leaves the build dir for inspection.
+    `patches` maps a constant name in the *copied* main.cpp (`NMu`,
+    `Niterations`, `N`, `step`, `thres`, `delta`, `NM`, ...) to a replacement
+    value — refs/ itself is never touched.  This is the resolution knob of the
+    P3 convergence study: `NMu` is the thimble count reused by nearest-neighbour
+    lookup and `N` the per-thimble integration resolution.
     """
     build = tempfile.mkdtemp(prefix="plpi1d_")
     for f in os.listdir(_SRC):
         if f.endswith((".cpp", ".h")):
             shutil.copy(os.path.join(_SRC, f), build)
+    if patches:
+        path = os.path.join(build, "main.cpp")
+        with open(path) as fh:
+            txt = fh.read()
+        for name, value in patches.items():
+            pat = re.compile(
+                rf"(const\s+(?:int|double)\s+{re.escape(name)}\s*=\s*)[^;]+;"
+            )
+            txt, n = pat.subn(lambda m: m.group(1) + str(value) + ";", txt)
+            if n != 1:
+                raise RuntimeError(f"P-LPI patch {name}={value}: {n} matches")
+        with open(path, "w") as fh:
+            fh.write(txt)
 
     cxx = os.environ.get("CXX", "g++")
     comp = subprocess.run(

@@ -53,6 +53,7 @@ pandas = "*"
 # extension (_pynufht) is not shipped in refs/, so we benchmark the NUFFT path.
 finufft = "*"
 mpmath = "*"
+jax = ">=0.10.2,<0.11"
 
 [tool.pixi.feature.comparison.pypi-dependencies]
 plind = "*"
@@ -83,3 +84,8 @@ notebook-comparison = { cmd = "jupyter nbconvert --execute --to notebook --inpla
 # The comparison harness (needs plind); run with `pixi run -e comparison bench`.
 [tool.pixi.feature.comparison.tasks]
 bench = { cmd = "python -m comparison.run", depends-on = ["build"] }
+# P3 evaluation program:
+bench-p3 = { cmd = "python -m comparison.convergence", depends-on = ["build"] }
+difficult = { cmd = "python -m comparison.difficult_cases", depends-on = ["build"] }
+glworia = { cmd = "python -m comparison.glworia_compare", depends-on = ["build"] }
+profiles-fiona = { cmd = "python comparison/profiles_fiona_check.py", depends-on = ["build"] }
