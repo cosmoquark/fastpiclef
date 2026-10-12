@@ -123,6 +123,111 @@ def test_point_mass_field_methods():
             raise AssertionError(f"expected ValueError for {bad}")
 
 
+def test_field_sweep_matches_solve():
+    # Batched sweep: one shared contour per band; each entry must match the
+    # single-point production solve (a different contour — Cauchy), and the
+    # omega=1 entry must hit the hard-coded ND raw integral.
+    field = fpl.PointMassField([(0.0, 0.0, 1.0)], beta=(0.5, 0.0))
+    omegas = [1.0, 3.0, 10.0, 30.0]  # ratio 30 -> two bands
+    sw = field.sweep(omegas)
+    assert sw.method == "slice-batch"
+    assert len(sw) == len(omegas)
+    assert sw.groups >= 2
+    for k, w in enumerate(omegas):
+        ref = field.solve(omega=w)
+        d = abs(sw.integral[k] - ref.integral) / abs(ref.integral)
+        assert d < 1e-11, (w, d)
+    want = 1.11515184895840158 + 10.6271092478315978j
+    assert abs(sw.integral[0] - want) / abs(want) < 1e-11
+
+
+def test_field_map_matches_solve():
+    # Batched source map: each grid entry must match the single-point solve.
+    field = fpl.PointMassField([(0.0, 0.0, 1.0)], beta=(0.0, 0.0))
+    b0s = [-0.5, 0.0, 0.5]
+    b1s = [-0.25, 0.25]
+    m = field.map(b0s, b1s, omega=3.0)
+    assert len(m.amplification) == len(b0s)
+    assert len(m.amplification[0]) == len(b1s)
+    for i, b0 in enumerate(b0s):
+        for j, b1 in enumerate(b1s):
+            ref = fpl.PointMassField([(0.0, 0.0, 1.0)], beta=(b0, b1)).solve(omega=3.0)
+            d = abs(m.integral[i][j] - ref.integral) / abs(ref.integral)
+            assert d < 1e-11, (b0, b1, d)
+
+
+def test_rational_grid_matches_thimble():
+    # Shared-contour 1D batch vs the per-point production thimble.
+    lens = fpl.RationalLens(beta=0.0, kappa=-2.0)
+    betas = list(np.linspace(-2.0, 2.0, 33))
+    omega = 10.0
+    integ, amps, errs = lens.grid(betas, omega, method="rc")
+    integ2, _, _ = lens.grid(betas, omega, method="thimble")
+    scale = max(abs(v) for v in integ2)
+    worst = max(abs(a - b) / scale for a, b in zip(integ, integ2))
+    assert worst < 1e-11, worst
+    for k in (0, 16, 32):
+        ref = fpl.RationalLens(beta=betas[k], kappa=-2.0).solve(omega=omega)
+        assert abs(integ[k] - ref.integral) / abs(ref.integral) < 1e-11
+    try:
+        lens.grid(betas, omega, method="nope")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for an unknown grid method")
+
+
+def test_lens_field_point_equals_point_mass():
+    # kappa = gamma = 0 with point components: the general model must
+    # reproduce the validated point-mass class.
+    beta = (0.1, 0.2)
+    comps = [fpl.PointComp(0.2, -0.1, 0.6), fpl.PointComp(-0.4, 0.3, 0.4)]
+    lf = fpl.LensField(comps, beta=beta)
+    pm = fpl.PointMassField([(0.2, -0.1, 0.6), (-0.4, 0.3, 0.4)], beta=beta)
+    a = lf.solve(omega=3.0).integral
+    b = pm.solve(omega=3.0).integral
+    assert abs(a - b) / abs(b) < 1e-11
+
+
+def test_lens_field_macro_only_closed_form():
+    kappa, g1 = 0.3, 0.2
+    lf = fpl.LensField([], beta=(0.4, -0.3), kappa=kappa, gamma1=g1)
+    w = 3.0
+    r = lf.solve(omega=w)
+    l0, l2 = lf.lambdas
+    b0, b1 = 0.4, -0.3
+    kin = 0.5 * (b0 * b0 + b1 * b1) - b0 * b0 / (2 * l0) - b1 * b1 / (2 * l2)
+    import cmath
+
+    # sign(lambda) * pi/4 each, plus the kinematic phase
+    sign = lambda x: 1.0 if x > 0 else -1.0
+    # F = (1/i) * e^{i sgn*pi/4 ...} e^{i w kin} / sqrt|.|  (the 1/i from omega/(2 pi i))
+    ref = (
+        cmath.exp(1j * (sign(l0) + sign(l2)) * 3.141592653589793 / 4.0)
+        * cmath.exp(1j * w * kin)
+        / (1j * cmath.sqrt(abs(l0 * l2)))
+    )
+    assert abs(r.amplification - ref) < 1e-10, (r.amplification, ref)
+
+
+def test_lens_field_sis_matches_polar_reference():
+    # Raw integral for a unit SIS at the origin, source (0.5, 0): the
+    # high-precision polar referee value (emitted 2026-10-12).
+    lf = fpl.LensField([fpl.SISComp(0.0, 0.0, 1.0)], beta=(0.5, 0.0))
+    r = lf.solve(omega=3.0)
+    want = 2.21863952037528067e00 - 3.87023745646334216e00j
+    assert abs(r.integral - want) / abs(want) < 1e-11
+
+
+def test_lens_field_geometric_macro_only():
+    lf = fpl.LensField([], beta=(0.4, -0.3), kappa=0.3, gamma1=0.2)
+    ims = lf.images()
+    assert len(ims) == 1, ims
+    l0, l2 = lf.lambdas
+    g = lf.geometric(omega=1e6)
+    assert abs(abs(g.amplification) - 1.0 / math.sqrt(abs(l0 * l2))) < 1e-5
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

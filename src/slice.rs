@@ -238,6 +238,15 @@ pub struct SliceConfig {
     pub tol_outer: f64,
     /// Evaluate outer panels' nodes in parallel (bitwise identical to serial).
     pub parallel: bool,
+    /// Rotated-tail angle (both variables).  The RC construction is exact for
+    /// any angle in `(0, pi/4]` — the family is the cheap arbiter between
+    /// implementations — and `alpha > pi/4` can cross a cut in the
+    /// mixed-sign (saddle macro image) case, so it is rejected.
+    pub tail_angle: f64,
+    /// Frequency-band ratio for the batched entry points: sorted omegas are
+    /// grouped greedily while `omega_max/omega_min <= band_ratio` (each band
+    /// gets its own contour, sized for the band's hardest frequency).
+    pub band_ratio: f64,
 }
 
 impl Default for SliceConfig {
@@ -249,25 +258,168 @@ impl Default for SliceConfig {
             tol_inner: 1e-14,
             tol_outer: 1e-13,
             parallel: true,
+            tail_angle: std::f64::consts::FRAC_PI_4,
+            band_ratio: 10.0,
         }
     }
 }
 
-/// Evaluation context of one inner solve. The slice position is carried as
-/// `x2 = base + off` (`base` real) so that every `x2 - b_k` is formed as the
-/// exact constant `(base - b_k) + off`: on the outer core (`off = ±rho^2`
-/// real) this is what keeps `|x2 - b_j|` cancellation-free next to the pinch
-/// heights, where a naive difference loses ~10 orders of relative precision
-/// and stalls adaptive refinement.
-struct InnerCtx<'a> {
+/// Model interface of the RC slice kernels: the engine owns the geometry
+/// (core extents, anchored panels, rotated tails, adaptivity, error budget);
+/// the model owns the phase and its per-slice constants.  [`crate::phases::PointMassField`]
+/// is the first implementation; the general model (macro κ/γ, halo profiles)
+/// adds another without touching the engine.
+///
+/// Every method that feeds an acceptance decision is written to reproduce the
+/// validated point-mass arithmetic exactly — see
+/// `tests/bitwise_baseline.rs`, which pins the pre-refactor bits.
+pub(crate) trait SliceModel: Sync {
+    /// Per-slice evaluation state (precomputed anchored constants).
+    type Eval<'a>: SliceEval
+    where
+        Self: 'a;
+
+    /// Source position.
+    fn beta(&self) -> [f64; 2];
+    /// The inner breakpoint abscissae: every singularity's real coordinate.
+    fn abscissae(&self) -> Vec<f64>;
+    /// The outer breakpoint abscissae (the pinch heights `b_j`).
+    fn outer_abscissae(&self) -> Vec<f64>;
+    /// Signed sum of the potential coefficients (floor scale; `Σ m_j` today).
+    fn potential_scale(&self) -> f64;
+    /// Finiteness/validity of the model itself.
+    fn validate_model(&self) -> Result<()>;
+    /// Reject slice positions outside the validated sector (complex `x2`).
+    fn validate_slice(&self, base: f64, off: Complex64) -> Result<()>;
+    /// Inner-tail geometry: `(sign(lambda0), |lambda0|, |beta_0|)`; the tail
+    /// rotates by `sign * tail_angle` and its length scales by `|lambda|^-1/2`.
+    fn inner_tail(&self) -> (f64, f64, f64);
+    /// Outer-tail geometry: `(sign(lambda2), |lambda2|, |beta_1|)`.
+    fn outer_tail(&self) -> (f64, f64, f64);
+    /// Gaussian centres `(beta0/lambda0, beta1/lambda2)` — the cores must
+    /// contain them (they are where the quadratics turn over).
+    fn centres(&self) -> (f64, f64);
+    /// Prepare the anchored per-slice constants.
+    fn evaluate(&self, base: f64, off: Complex64) -> Self::Eval<'_>;
+    /// Same model with a different source position.  The batched entry points
+    /// use the zero-source copy as their shared phase: they assume
+    /// `phi(z0, x2; beta) = phi(z0, x2; 0) - beta0 z0 - beta1 x2 + (beta0^2 + beta1^2)/2`,
+    /// which holds by construction for every model here (the source enters
+    /// linearly) and is pinned by a unit test.
+    fn with_beta(&self, beta: [f64; 2]) -> Self
+    where
+        Self: Sized;
+    /// Copy without zero-weight terms (invisible to the integral).
+    fn pruned(&self) -> Self
+    where
+        Self: Sized;
+}
+
+/// Phase evaluation at one slice position (`x2 = base + off`).
+pub(crate) trait SliceEval: Sync {
+    /// Phase on the real-axis core at `x = x0 + sgn*r`, real `x2`.
+    fn phi_core_real(&self, r: f64, x0: f64, sgn: f64) -> f64;
+    /// Phase on the real-axis core at `x = x0 + sgn*r`, complex `x2`
+    /// (composite principal logs).
+    fn phi_core_complex(&self, r: f64, x0: f64, sgn: f64) -> Complex64;
+    /// Phase at complex `z_0` (the rotated tails).
+    fn phi_tail(&self, z: Complex64) -> Complex64;
+    /// `|x2-part|^2` entering the roundoff floor (`dbeta.norm_sqr()` today).
+    fn slice_quad_sq(&self) -> f64;
+}
+
+impl SliceModel for PointMassField {
+    type Eval<'a> = PointMassEval<'a>;
+
+    fn beta(&self) -> [f64; 2] {
+        self.beta
+    }
+
+    fn abscissae(&self) -> Vec<f64> {
+        self.lenses.iter().map(|&(a, _, _)| a).collect()
+    }
+
+    fn outer_abscissae(&self) -> Vec<f64> {
+        self.lenses.iter().map(|&(_, b, _)| b).collect()
+    }
+
+    fn potential_scale(&self) -> f64 {
+        self.lenses.iter().map(|&(_, _, m)| m).sum()
+    }
+
+    fn validate_model(&self) -> Result<()> {
+        for &(a, b, m) in &self.lenses {
+            if !a.is_finite() || !b.is_finite() || !m.is_finite() {
+                return Err(Error::InvalidInput("lens positions and masses must be finite"));
+            }
+        }
+        Ok(())
+    }
+
+    fn inner_tail(&self) -> (f64, f64, f64) {
+        (1.0, 1.0, self.beta[0].abs())
+    }
+
+    fn outer_tail(&self) -> (f64, f64, f64) {
+        (1.0, 1.0, self.beta[1].abs())
+    }
+
+    fn centres(&self) -> (f64, f64) {
+        (self.beta[0], self.beta[1])
+    }
+
+    fn validate_slice(&self, base: f64, off: Complex64) -> Result<()> {
+        // Sector validity: Im(d_k^2) > 0 for every mass is what keeps each
+        // w_k in the open upper half plane along the whole inner contour.
+        // (Satisfied on the outer rotated tails by construction; a plain
+        // complex x2 off those rays may violate it — reject it.)
+        for &(_, b, m) in &self.lenses {
+            if m == 0.0 {
+                continue; // a zero-coefficient log has no branch point
+            }
+            let d = Complex64::from(base - b) + off;
+            if (d * d).im <= 0.0 {
+                return Err(Error::InvalidInput(
+                    "complex slice position outside the validated sector: Im((x2-b)^2) <= 0",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn evaluate(&self, base: f64, off: Complex64) -> PointMassEval<'_> {
+        PointMassEval::new(self, base, off)
+    }
+
+    fn with_beta(&self, beta: [f64; 2]) -> Self {
+        PointMassField {
+            beta,
+            lenses: self.lenses.clone(),
+        }
+    }
+
+    fn pruned(&self) -> Self {
+        PointMassField {
+            beta: self.beta,
+            lenses: self.lenses.iter().copied().filter(|&(_, _, m)| m != 0.0).collect(),
+        }
+    }
+}
+
+/// Evaluation context of one inner solve (the point-mass model). The slice
+/// position is carried as `x2 = base + off` (`base` real) so that every
+/// `x2 - b_k` is formed as the exact constant `(base - b_k) + off`: on the
+/// outer core (`off = ±rho^2` real) this is what keeps `|x2 - b_j|`
+/// cancellation-free next to the pinch heights, where a naive difference loses
+/// ~10 orders of relative precision and stalls adaptive refinement.
+pub(crate) struct PointMassEval<'a> {
     field: &'a PointMassField,
     /// `d_k = (base - b_k) + off` per mass, and `dbeta = (base - beta_1) + off`.
     dk: Vec<Complex64>,
     dbeta: Complex64,
-    mass_sum: f64,
 }
 
-impl<'a> InnerCtx<'a> {
+impl<'a> PointMassEval<'a> {
     fn new(field: &'a PointMassField, base: f64, off: Complex64) -> Self {
         let dk = field
             .lenses
@@ -275,20 +427,16 @@ impl<'a> InnerCtx<'a> {
             .map(|&(_, b, _)| Complex64::from(base - b) + off)
             .collect();
         let dbeta = Complex64::from(base - field.beta[1]) + off;
-        let mass_sum = field.lenses.iter().map(|&(_, _, m)| m).sum();
-        Self {
-            field,
-            dk,
-            dbeta,
-            mass_sum,
-        }
+        Self { field, dk, dbeta }
     }
+}
 
+impl<'a> SliceEval for PointMassEval<'a> {
     /// Phase on the real-axis core at `x = x0 + sgn*r` — real arithmetic,
     /// valid when `x2` is real (`off.im == 0`). Every `x - a_k` is formed as
     /// the exact constant `(x0 - a_k) + sgn*r`.
     #[inline]
-    fn phi_real(&self, r: f64, x0: f64, sgn: f64) -> f64 {
+    fn phi_core_real(&self, r: f64, x0: f64, sgn: f64) -> f64 {
         let u = (x0 - self.field.beta[0]) + sgn * r;
         let d1 = self.dbeta.re;
         let mut v = 0.5 * (u * u + d1 * d1);
@@ -304,7 +452,7 @@ impl<'a> InnerCtx<'a> {
     /// position (composite principal log; each `w_k` stays in the upper half
     /// plane, checked by the caller).
     #[inline]
-    fn phi_complex(&self, r: f64, x0: f64, sgn: f64) -> Complex64 {
+    fn phi_core_complex(&self, r: f64, x0: f64, sgn: f64) -> Complex64 {
         let u = Complex64::from((x0 - self.field.beta[0]) + sgn * r);
         let mut v = 0.5 * (u * u + self.dbeta * self.dbeta);
         for (k, &(a, _, m)) in self.field.lenses.iter().enumerate() {
@@ -327,6 +475,11 @@ impl<'a> InnerCtx<'a> {
         }
         v
     }
+
+    #[inline]
+    fn slice_quad_sq(&self) -> f64 {
+        self.dbeta.norm_sqr()
+    }
 }
 
 /// The RC inner solve at `x2 = base + off` (the workhorse behind
@@ -344,8 +497,18 @@ impl<'a> InnerCtx<'a> {
 /// principal log is the analytic continuation of the physical value: the
 /// deformation never leaves the physical sheet. Returns the solve and its
 /// node-evaluation count.
-fn inner_rc(
-    field: &PointMassField,
+/// The rotated-tail angle is validated here (the construction is exact for any
+/// angle in `(0, pi/4]`; the wider family is the arbiter between
+/// implementations, and `alpha > pi/4` can cross a cut in the mixed-sign case).
+fn check_tail_angle(cfg: &SliceConfig) -> Result<()> {
+    if !(cfg.tail_angle > 0.0) || cfg.tail_angle > std::f64::consts::FRAC_PI_4 {
+        return Err(Error::InvalidInput("tail angle must be in (0, pi/4]"));
+    }
+    Ok(())
+}
+
+fn inner_rc<M: SliceModel>(
+    model: &M,
     base: f64,
     off: Complex64,
     cfg: &SliceConfig,
@@ -354,58 +517,47 @@ fn inner_rc(
     if !(omega > 0.0) || !omega.is_finite() {
         return Err(Error::InvalidInput("omega must be > 0 and finite"));
     }
+    check_tail_angle(cfg)?;
     if off.im != 0.0 {
-        // Sector validity: Im(d_k^2) > 0 for every mass is what keeps each
-        // w_k in the open upper half plane along the whole inner contour.
-        // (Satisfied on the outer rotated tails by construction; a plain
-        // complex x2 off those rays may violate it — reject it.)
-        for &(_, b, m) in &field.lenses {
-            if m == 0.0 {
-                continue; // a zero-coefficient log has no branch point
-            }
-            let d = Complex64::from(base - b) + off;
-            if (d * d).im <= 0.0 {
-                return Err(Error::InvalidInput(
-                    "complex slice position outside the validated sector: Im((x2-b)^2) <= 0",
-                ));
-            }
-        }
+        model.validate_slice(base, off)?;
     }
-    Ok(inner_rc_unchecked(field, base, off, cfg))
+    Ok(inner_rc_unchecked(model, base, off, cfg))
 }
 
 /// [`inner_rc`] without the input validation — for callers that have already
 /// established validity (`slice_field`: omega checked once, sector satisfied
 /// by construction on its anchored positions).
-fn inner_rc_unchecked(
-    field: &PointMassField,
+fn inner_rc_unchecked<M: SliceModel>(
+    model: &M,
     base: f64,
     off: Complex64,
     cfg: &SliceConfig,
 ) -> (Output, usize) {
     let omega = cfg.omega;
-    let ctx = InnerCtx::new(field, base, off);
+    let ev = model.evaluate(base, off);
+    let beta = model.beta();
+    let abs = model.abscissae();
     let real_slice = off.im == 0.0;
 
-    // Core breakpoints: every branch-point abscissa (and beta_0), bracketed.
+    // Core breakpoints: every branch-point abscissa (and the Gaussian centre
+    // beta_0/lambda_0), bracketed.
     let shift = off.im.abs();
-    let (mut amin, mut amax) = (field.beta[0], field.beta[0]);
-    for &(a, _, _) in &field.lenses {
+    let (c0, _c2) = model.centres();
+    let (mut amin, mut amax) = (beta[0].min(c0), beta[0].max(c0));
+    for &a in &abs {
         amin = amin.min(a);
         amax = amax.max(a);
     }
     let (aa, bb) = (amin - cfg.margin - shift, amax + cfg.margin + shift);
     let mut pts = vec![aa, bb];
-    for &(a, _, _) in &field.lenses {
-        pts.push(a);
-    }
+    pts.extend_from_slice(&abs);
     pts.sort_by(|p, q| p.partial_cmp(q).unwrap());
     pts.dedup();
 
     // Roundoff floor at the ulp level of omega*phi (see `adaptive`'s docs);
-    // `+ mass_sum` covers the log terms of large fields.
-    let span = (aa - field.beta[0]).abs().max((bb - field.beta[0]).abs());
-    let phimax = 0.5 * span * span + 0.5 * ctx.dbeta.norm_sqr() + 5.0 + ctx.mass_sum;
+    // `+ potential_scale` covers the log terms of large fields.
+    let span = (aa - beta[0]).abs().max((bb - beta[0]).abs());
+    let phimax = 0.5 * span * span + 0.5 * ev.slice_quad_sq() + 5.0 + model.potential_scale();
     let floor = 4e-16 * (1.0 + omega * phimax);
     let core_cfg = AdaptiveConfig {
         tol: cfg.tol_inner,
@@ -432,10 +584,10 @@ fn inner_rc_unchecked(
         for (x0, sgn) in [(lo, 1.0), (hi, -1.0)] {
             let f = |r: f64| -> (Complex64, f64) {
                 if real_slice {
-                    let phi = ctx.phi_real(r, x0, sgn);
+                    let phi = ev.phi_core_real(r, x0, sgn);
                     (Complex64::from_polar(1.0, omega * phi), 0.0)
                 } else {
-                    let phi = ctx.phi_complex(r, x0, sgn);
+                    let phi = ev.phi_core_complex(r, x0, sgn);
                     ((Complex64::i() * omega * phi).exp(), 0.0)
                 }
             };
@@ -446,8 +598,10 @@ fn inner_rc_unchecked(
         }
     }
 
-    // Rotated tails, pi/4 into the Gaussian valleys.
-    let e4 = Complex64::from_polar(1.0, std::f64::consts::FRAC_PI_4);
+    // Rotated tails into the Gaussian valleys: direction sign(lambda0)*angle,
+    // length from the lambda-scaled Gaussian decay plus the beta-linear term.
+    let (tail_sign, l_abs, b_abs) = model.inner_tail();
+    let e4 = Complex64::from_polar(1.0, tail_sign * cfg.tail_angle);
     let iw = Complex64::i() * omega;
     for (end_z, sgn) in [(bb, 1.0), (aa, -1.0)] {
         // z = end_z + sgn * e4 * t. On the right tail (sgn = +1) this is the
@@ -455,10 +609,12 @@ fn inner_rc_unchecked(
         // the Jacobian (-e4 dt) and the flipped t-orientation (integral over
         // t in [0, inf) runs z from A toward -infinite) contribute a sign, so
         // both tails enter as +e4 * integrand.
-        let f = |t: f64| (e4 * (iw * ctx.phi_tail(end_z + sgn * e4 * t)).exp(), 0.0);
+        let f = |t: f64| (e4 * (iw * ev.phi_tail(end_z + sgn * e4 * t)).exp(), 0.0);
         // Decay probe: the Gaussian part gives e^{-45} at the default length,
         // but large total mass slows the decay — double until negligible.
-        let mut t_end = (2.0 * 45.0 / omega).sqrt() + 2.0;
+        let mut t_end = (2.0 * 45.0 / (omega * l_abs)).sqrt()
+            + b_abs / (l_abs * cfg.tail_angle.cos())
+            + 2.0;
         let scale = f(0.0).0.norm().max(1e-30);
         let mut decayed = false;
         for _ in 0..5 {
@@ -535,6 +691,12 @@ pub struct SliceFieldOutput {
 /// normalisation to the free-space amplification happens in the caller
 /// (the Python layer, as for the other solvers).
 pub fn slice_field(field: &PointMassField, cfg: &SliceConfig) -> Result<SliceFieldOutput> {
+    slice_field_g(field, cfg)
+}
+
+/// Generic engine behind [`slice_field`] (public wrappers keep the concrete
+/// `PointMassField` types; the batched entry points share this).
+pub(crate) fn slice_field_g<M: SliceModel>(field: &M, cfg: &SliceConfig) -> Result<SliceFieldOutput> {
     let omega = cfg.omega;
     if !(omega > 0.0) || !omega.is_finite() {
         return Err(Error::InvalidInput("omega must be > 0 and finite"));
@@ -544,40 +706,31 @@ pub fn slice_field(field: &PointMassField, cfg: &SliceConfig) -> Result<SliceFie
     {
         return Err(Error::InvalidInput("margins must be > 0 and finite"));
     }
-    for &(a, b, m) in &field.lenses {
-        if !a.is_finite() || !b.is_finite() || !m.is_finite() {
-            return Err(Error::InvalidInput("lens positions and masses must be finite"));
-        }
-    }
-    // Zero-mass lenses contribute nothing (a zero-coefficient log has no
+    check_tail_angle(cfg)?;
+    field.validate_model()?;
+    // Zero-weight terms contribute nothing (a zero-coefficient log has no
     // branch point); dropping them once here keeps their abscissae out of
     // every breakpoint list below.
-    let eff_field = PointMassField {
-        beta: field.beta,
-        lenses: field
-            .lenses
-            .iter()
-            .copied()
-            .filter(|&(_, _, m)| m != 0.0)
-            .collect(),
-    };
+    let eff_field = field.pruned();
 
-    // Outer breakpoints: every pinch height b_j (and beta_1), bracketed.
-    let (mut bmin, mut bmax) = (field.beta[1], field.beta[1]);
-    for &(_, b, _) in &eff_field.lenses {
+    // Outer breakpoints: every pinch height b_j (and the Gaussian centre
+    // beta_1/lambda_2), bracketed.
+    let beta = field.beta();
+    let (_c0, c2) = field.centres();
+    let bvals = eff_field.outer_abscissae();
+    let (mut bmin, mut bmax) = (beta[1].min(c2), beta[1].max(c2));
+    for &b in &bvals {
         bmin = bmin.min(b);
         bmax = bmax.max(b);
     }
     let (a2, b2) = (bmin - cfg.margin_outer, bmax + cfg.margin_outer);
     let mut pts = vec![a2, b2];
-    for &(_, b, _) in &eff_field.lenses {
-        pts.push(b);
-    }
+    pts.extend_from_slice(&bvals);
     pts.sort_by(|p, q| p.partial_cmp(q).unwrap());
     pts.dedup();
 
-    let mass_sum: f64 = eff_field.lenses.iter().map(|&(_, _, m)| m).sum();
-    let span = (a2 - field.beta[1]).abs().max((b2 - field.beta[1]).abs());
+    let mass_sum = eff_field.potential_scale();
+    let span = (a2 - beta[1]).abs().max((b2 - beta[1]).abs());
     let floor = 4e-16 * (1.0 + omega * (0.5 * span * span + 10.0 + mass_sum));
     let outer_cfg = AdaptiveConfig {
         tol: cfg.tol_outer,
@@ -613,7 +766,8 @@ pub fn slice_field(field: &PointMassField, cfg: &SliceConfig) -> Result<SliceFie
     // Outer tails: x2 = end + sgn*e4*s. Same sign bookkeeping as the inner
     // tails (Jacobian and orientation flips cancel), so both contribute
     // + e4 * G.
-    let e4 = Complex64::from_polar(1.0, std::f64::consts::FRAC_PI_4);
+    let (tail_sign, l_abs, b_abs) = field.outer_tail();
+    let e4 = Complex64::from_polar(1.0, tail_sign * cfg.tail_angle);
     for (end_x2, sgn) in [(b2, 1.0), (a2, -1.0)] {
         let f = |s: f64| -> (Complex64, f64) {
             solves.fetch_add(1, Ordering::Relaxed);
@@ -624,7 +778,9 @@ pub fn slice_field(field: &PointMassField, cfg: &SliceConfig) -> Result<SliceFie
         // Decay probe (the s^2/2 self-term of the rotated ray gives e^{-45}
         // at the default length; a huge total mass can slow it — double until
         // negligible, then budget the truncation).
-        let mut s_end = (2.0 * 45.0 / omega).sqrt() + 2.0;
+        let mut s_end = (2.0 * 45.0 / (omega * l_abs)).sqrt()
+            + b_abs / (l_abs * cfg.tail_angle.cos())
+            + 2.0;
         let scale = f(0.0).0.norm().max(1e-30);
         let mut decayed = false;
         for _ in 0..5 {

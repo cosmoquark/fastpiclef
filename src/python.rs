@@ -14,10 +14,17 @@ use crate::phases::{
     SimGLens,
 };
 use crate::saddles::saddles_from_polynomial;
-use crate::{
-    Error, PolarConfig, PolarSolver, RationalPhase, SliceConfig, Solver, SolverConfig,
-    ThimbleConfig, ThimbleSolver, slice_field, solve_point_mass_polar,
+use crate::lens_field::{
+    Component, LensField, Profile, lens_field_geometric, lens_field_images, lens_field_solve,
 };
+use crate::rc1d::Rational1DModel;
+use crate::slice_batch::slice_field_batch_g;
+use crate::{
+    Error, FieldBatch, PolarConfig, PolarSolver, RationalPhase, SliceConfig, Solver, SolverConfig,
+    ThimbleConfig, ThimbleSolver, rc_1d_batch, slice_field, slice_field_batch,
+    solve_point_mass_polar,
+};
+use rayon::prelude::*;
 use std::f64::consts::PI;
 
 /// Free-space amplitude $(2\pi i/\omega)^{d/2}$ — the integral of the bare
@@ -82,6 +89,108 @@ fn make_output(
         method: method.to_string(),
         steps,
     }
+}
+
+/// Result of a batched frequency sweep (`PointMassField.sweep`): one shared
+/// contour for all frequencies; arrays in the caller's omega order.
+#[pyclass(name = "SweepResult", frozen)]
+#[derive(Clone)]
+struct PySweepResult {
+    #[pyo3(get)]
+    omegas: Vec<f64>,
+    #[pyo3(get)]
+    integral: Vec<Complex64>,
+    #[pyo3(get)]
+    amplification: Vec<Complex64>,
+    #[pyo3(get)]
+    error: Vec<f64>,
+    #[pyo3(get)]
+    method: String,
+    #[pyo3(get)]
+    inner_solves: usize,
+    #[pyo3(get)]
+    groups: usize,
+}
+
+#[pymethods]
+impl PySweepResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "SweepResult(n={}, method='{}', inner_solves={}, groups={})",
+            self.omegas.len(),
+            self.method,
+            self.inner_solves,
+            self.groups
+        )
+    }
+    fn __len__(&self) -> usize {
+        self.omegas.len()
+    }
+}
+
+/// Result of a batched source map (`PointMassField.map`): nested lists in the
+/// caller's (beta0, beta1) orders.
+#[pyclass(name = "MapResult", frozen)]
+#[derive(Clone)]
+struct PyMapResult {
+    #[pyo3(get)]
+    beta0s: Vec<f64>,
+    #[pyo3(get)]
+    beta1s: Vec<f64>,
+    #[pyo3(get)]
+    omega: f64,
+    #[pyo3(get)]
+    integral: Vec<Vec<Complex64>>,
+    #[pyo3(get)]
+    amplification: Vec<Vec<Complex64>>,
+    #[pyo3(get)]
+    error: Vec<Vec<f64>>,
+    #[pyo3(get)]
+    method: String,
+    #[pyo3(get)]
+    inner_solves: usize,
+    #[pyo3(get)]
+    groups: usize,
+}
+
+#[pymethods]
+impl PyMapResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "MapResult({}x{}, omega={}, method='{}', inner_solves={}, groups={})",
+            self.beta0s.len(),
+            self.beta1s.len(),
+            self.omega,
+            self.method,
+            self.inner_solves,
+            self.groups
+        )
+    }
+}
+
+/// Build the batched `SliceConfig` from the keyword knobs.
+fn batch_cfg(
+    omega: f64,
+    tol: Option<f64>,
+    margin: Option<f64>,
+    margin_outer: Option<f64>,
+    band_ratio: Option<f64>,
+) -> SliceConfig {
+    let mut cfg = SliceConfig { omega, ..SliceConfig::default() };
+    if let Some(t) = tol {
+        cfg.tol_inner = t;
+        cfg.tol_outer = t;
+    }
+    if let Some(m) = margin {
+        cfg.margin = m;
+    }
+    if let Some(m) = margin_outer {
+        cfg.margin_outer = m;
+    }
+    if let Some(b) = band_ratio {
+        cfg.band_ratio = b;
+    }
+    cfg
 }
 
 fn mesh_config_1d(
@@ -326,6 +435,75 @@ impl PyCustom {
 }
 solve_thimble_methods!(PyCustom);
 
+/// Batched source-grid solve for the rational 1D lenses: `method="rc"` runs
+/// the shared-contour RC batch (exact by Cauchy; one contour for the grid),
+/// `method="thimble"` the production per-point thimble in parallel. Returns
+/// `(integrals, amplifications, errors)` in the caller's beta order.
+macro_rules! rational_grid_method {
+    ($ty:ident) => {
+        #[pymethods]
+        impl $ty {
+            #[pyo3(signature = (betas, omega, *, method="rc", tol=None, margin=None))]
+            fn grid(
+                &self,
+                betas: Vec<f64>,
+                omega: f64,
+                method: &str,
+                tol: Option<f64>,
+                margin: Option<f64>,
+            ) -> PyResult<(Vec<Complex64>, Vec<Complex64>, Vec<f64>)> {
+                if !(omega > 0.0) {
+                    return Err(PyValueError::new_err("omega must be > 0"));
+                }
+                match method {
+                    "rc" => {
+                        let mut cfg = SliceConfig { omega, ..SliceConfig::default() };
+                        if let Some(t) = tol {
+                            cfg.tol_inner = t;
+                        }
+                        if let Some(m) = margin {
+                            cfg.margin = m;
+                        }
+                        let (vals, errs) =
+                            rc_1d_batch(&self.inner, &betas, omega, &cfg).map_err(map_err)?;
+                        let nrm = free_space(1, omega);
+                        let amps = vals.iter().map(|v| *v / nrm).collect();
+                        Ok((vals, amps, errs))
+                    }
+                    "thimble" | "auto" => {
+                        let lens = &self.inner;
+                        let results: Vec<(Complex64, f64)> = betas
+                            .par_iter()
+                            .map(|&b| {
+                                let l = Rational1DModel::with_beta(lens, b);
+                                ThimbleSolver::new_rational(
+                                    &l,
+                                    ThimbleConfig { omega, ..Default::default() },
+                                )
+                                .run()
+                                .map(|o| (o.value, o.error))
+                            })
+                            .collect::<Result<Vec<_>, _>>()
+                            .map_err(map_err)?;
+                        let nrm = free_space(1, omega);
+                        let vals: Vec<Complex64> = results.iter().map(|r| r.0).collect();
+                        let errs: Vec<f64> = results.iter().map(|r| r.1).collect();
+                        let amps = vals.iter().map(|v| *v / nrm).collect();
+                        Ok((vals, amps, errs))
+                    }
+                    other => Err(PyValueError::new_err(format!(
+                        "unknown method '{other}'; use 'rc' or 'thimble'"
+                    ))),
+                }
+            }
+        }
+    };
+}
+
+rational_grid_method!(PyRationalLens);
+rational_grid_method!(PySimG);
+rational_grid_method!(PyCustom);
+
 // --- 2D phase classes -----------------------------------------------------
 
 fn mesh_config_2d(
@@ -508,6 +686,92 @@ impl PyPointMassField {
         Ok(make_output(2, omega, integral, 0.0, "geometric", self.inner.lenses.len()))
     }
 
+    /// Batched frequency sweep: one shared contour for every frequency
+    /// (bands of ratio `band_ratio` get their own contour). Exact by the same
+    /// Cauchy construction as `solve`; validated against the Nakamura-Deguchi
+    /// closed form in `tests/batch.rs`. Returns a `SweepResult`.
+    #[pyo3(signature = (omegas, *, tol=None, margin=None, margin_outer=None, band_ratio=None))]
+    fn sweep(
+        &self,
+        omegas: Vec<f64>,
+        tol: Option<f64>,
+        margin: Option<f64>,
+        margin_outer: Option<f64>,
+        band_ratio: Option<f64>,
+    ) -> PyResult<PySweepResult> {
+        let cfg = batch_cfg(1.0, tol, margin, margin_outer, band_ratio);
+        let batch = FieldBatch {
+            omegas: omegas.clone(),
+            beta0s: vec![self.inner.beta[0]],
+            beta1s: vec![self.inner.beta[1]],
+        };
+        let out = slice_field_batch(&self.inner, &batch, &cfg).map_err(map_err)?;
+        let amp = out
+            .values
+            .iter()
+            .zip(omegas.iter())
+            .map(|(v, &w)| *v / free_space(2, w))
+            .collect();
+        Ok(PySweepResult {
+            omegas,
+            integral: out.values,
+            amplification: amp,
+            error: out.errors,
+            method: "slice-batch".to_string(),
+            inner_solves: out.inner_solves,
+            groups: out.groups,
+        })
+    }
+
+    /// Batched source map at fixed omega: one shared contour for the whole
+    /// `beta0s x beta1s` grid (the magnification-map protocol). Returns a
+    /// `MapResult` with nested lists in the caller's orders.
+    #[pyo3(signature = (beta0s, beta1s, omega, *, tol=None, margin=None, margin_outer=None, band_ratio=None))]
+    fn map(
+        &self,
+        beta0s: Vec<f64>,
+        beta1s: Vec<f64>,
+        omega: f64,
+        tol: Option<f64>,
+        margin: Option<f64>,
+        margin_outer: Option<f64>,
+        band_ratio: Option<f64>,
+    ) -> PyResult<PyMapResult> {
+        if !(omega > 0.0) {
+            return Err(PyValueError::new_err("omega must be > 0"));
+        }
+        let cfg = batch_cfg(omega, tol, margin, margin_outer, band_ratio);
+        let batch = FieldBatch {
+            omegas: vec![omega],
+            beta0s: beta0s.clone(),
+            beta1s: beta1s.clone(),
+        };
+        let out = slice_field_batch(&self.inner, &batch, &cfg).map_err(map_err)?;
+        let m1 = beta1s.len();
+        let norm = free_space(2, omega);
+        let mut integral = Vec::with_capacity(beta0s.len());
+        let mut amplification = Vec::with_capacity(beta0s.len());
+        let mut error = Vec::with_capacity(beta0s.len());
+        for i0 in 0..beta0s.len() {
+            let lo = i0 * m1;
+            let hi = lo + m1;
+            integral.push(out.values[lo..hi].to_vec());
+            amplification.push(out.values[lo..hi].iter().map(|v| *v / norm).collect());
+            error.push(out.errors[lo..hi].to_vec());
+        }
+        Ok(PyMapResult {
+            beta0s,
+            beta1s,
+            omega,
+            integral,
+            amplification,
+            error,
+            method: "slice-batch".to_string(),
+            inner_solves: out.inner_solves,
+            groups: out.groups,
+        })
+    }
+
     /// Exact finite-omega field integral. `method="slice"` is the RC
     /// Cartesian-slice reduction (real core + rotated tails in both
     /// variables; exact by Cauchy, validated against the point-mass
@@ -563,6 +827,262 @@ impl PyPointMassField {
     }
 }
 
+/// A star/halo component for `LensField`: a point mass (optionally softened).
+#[pyclass(name = "PointComp", frozen)]
+#[derive(Clone)]
+struct PyPointComp {
+    x: f64,
+    y: f64,
+    mass: f64,
+    xc: f64,
+}
+
+#[pymethods]
+impl PyPointComp {
+    #[new]
+    #[pyo3(signature = (x, y, mass, xc=0.0))]
+    fn new(x: f64, y: f64, mass: f64, xc: f64) -> Self {
+        Self { x, y, mass, xc }
+    }
+}
+
+/// A singular isothermal sphere component.
+#[pyclass(name = "SISComp", frozen)]
+#[derive(Clone)]
+struct PySisComp {
+    x: f64,
+    y: f64,
+    psi0: f64,
+}
+
+#[pymethods]
+impl PySisComp {
+    #[new]
+    fn new(x: f64, y: f64, psi0: f64) -> Self {
+        Self { x, y, psi0 }
+    }
+}
+
+/// A cored isothermal sphere component.
+#[pyclass(name = "CISComp", frozen)]
+#[derive(Clone)]
+struct PyCisComp {
+    x: f64,
+    y: f64,
+    psi0: f64,
+    xc: f64,
+}
+
+#[pymethods]
+impl PyCisComp {
+    #[new]
+    fn new(x: f64, y: f64, psi0: f64, xc: f64) -> Self {
+        Self { x, y, psi0, xc }
+    }
+}
+
+/// An NFW halo component (`xs` the scale radius).
+#[pyclass(name = "NFWComp", frozen)]
+#[derive(Clone)]
+struct PyNfwComp {
+    x: f64,
+    y: f64,
+    psi0: f64,
+    xs: f64,
+}
+
+#[pymethods]
+impl PyNfwComp {
+    #[new]
+    fn new(x: f64, y: f64, psi0: f64, xs: f64) -> Self {
+        Self { x, y, psi0, xs }
+    }
+}
+
+/// Extract a [`Component`] from one of the component pyclasses.
+fn component_from_any(obj: &Bound<'_, PyAny>) -> PyResult<Component> {
+    if let Ok(p) = obj.extract::<PyPointComp>() {
+        return Ok(Component { x: p.x, y: p.y, profile: Profile::Point { mass: p.mass, xc: p.xc } });
+    }
+    if let Ok(p) = obj.extract::<PySisComp>() {
+        return Ok(Component { x: p.x, y: p.y, profile: Profile::Sis { psi0: p.psi0 } });
+    }
+    if let Ok(p) = obj.extract::<PyCisComp>() {
+        return Ok(Component { x: p.x, y: p.y, profile: Profile::Cis { psi0: p.psi0, xc: p.xc } });
+    }
+    if let Ok(p) = obj.extract::<PyNfwComp>() {
+        return Ok(Component { x: p.x, y: p.y, profile: Profile::Nfw { psi0: p.psi0, xs: p.xs } });
+    }
+    Err(PyValueError::new_err(
+        "components must be PointComp/SISComp/CISComp/NFWComp instances",
+    ))
+}
+
+/// General lens field: stars/halos (axisymmetric profiles) plus the external
+/// macro model (`kappa`, `gamma1`, `gamma2`).  `solve`/`sweep`/`map` run the
+/// same exact RC engine (P2a); `images`/`geometric` give the real-space
+/// geometry (multi-start Newton + stationary phase).
+#[pyclass(name = "LensField")]
+struct PyLensField {
+    inner: LensField,
+}
+
+#[pymethods]
+impl PyLensField {
+    #[new]
+    #[pyo3(signature = (components, beta=(0.0, 0.0), kappa=0.0, gamma1=0.0, gamma2=0.0))]
+    fn new(
+        components: Vec<Bound<'_, PyAny>>,
+        beta: (f64, f64),
+        kappa: f64,
+        gamma1: f64,
+        gamma2: f64,
+    ) -> PyResult<Self> {
+        let comps = components
+            .iter()
+            .map(component_from_any)
+            .collect::<PyResult<Vec<_>>>()?;
+        let inner = LensField::new([beta.0, beta.1], kappa, gamma1, gamma2, comps)
+            .map_err(map_err)?;
+        Ok(Self { inner })
+    }
+
+    /// Number of components.
+    #[getter]
+    fn n(&self) -> usize {
+        self.inner.components.len()
+    }
+
+    /// The macro parameters as stored (after the shear rotation).
+    #[getter]
+    fn lambdas(&self) -> (f64, f64) {
+        (self.inner.lambda0, self.inner.lambda2)
+    }
+
+    /// The geometric-optics images (real solutions of the lens equation).
+    fn images(&self) -> Vec<(f64, f64)> {
+        lens_field_images(&self.inner).into_iter().map(|p| (p[0], p[1])).collect()
+    }
+
+    /// Stationary-phase (geometric-optics) amplification; exact as omega -> oo
+    /// away from caustics.  `.error` is 0 (an asymptotic form, not quadrature).
+    fn geometric(&self, omega: f64) -> PyResult<PyOutput> {
+        if !(omega > 0.0) {
+            return Err(PyValueError::new_err("omega must be > 0"));
+        }
+        let f = lens_field_geometric(&self.inner, omega);
+        Ok(make_output(2, omega, f * free_space(2, omega), 0.0, "geometric", self.inner.components.len()))
+    }
+
+    /// Exact finite-omega field integral (RC engine; P2a).
+    #[pyo3(signature = (omega, *, tol=None, margin=None, margin_outer=None))]
+    fn solve(
+        &self,
+        omega: f64,
+        tol: Option<f64>,
+        margin: Option<f64>,
+        margin_outer: Option<f64>,
+    ) -> PyResult<PyOutput> {
+        if !(omega > 0.0) {
+            return Err(PyValueError::new_err("omega must be > 0"));
+        }
+        let mut cfg = SliceConfig { omega, ..SliceConfig::default() };
+        if let Some(t) = tol {
+            cfg.tol_inner = t;
+            cfg.tol_outer = t;
+        }
+        if let Some(m) = margin {
+            cfg.margin = m;
+        }
+        if let Some(m) = margin_outer {
+            cfg.margin_outer = m;
+        }
+        let o = lens_field_solve(&self.inner, &cfg).map_err(map_err)?;
+        Ok(make_output(2, omega, o.value, o.error, "slice", o.inner_solves))
+    }
+
+    /// Batched frequency sweep (see `PointMassField.sweep`).
+    #[pyo3(signature = (omegas, *, tol=None, margin=None, margin_outer=None, band_ratio=None))]
+    fn sweep(
+        &self,
+        omegas: Vec<f64>,
+        tol: Option<f64>,
+        margin: Option<f64>,
+        margin_outer: Option<f64>,
+        band_ratio: Option<f64>,
+    ) -> PyResult<PySweepResult> {
+        let cfg = batch_cfg(1.0, tol, margin, margin_outer, band_ratio);
+        let batch = FieldBatch {
+            omegas: omegas.clone(),
+            beta0s: vec![self.inner.beta[0]],
+            beta1s: vec![self.inner.beta[1]],
+        };
+        let out = slice_field_batch_g(&self.inner, &batch, &cfg).map_err(map_err)?;
+        let amp = out
+            .values
+            .iter()
+            .zip(omegas.iter())
+            .map(|(v, &w)| *v / free_space(2, w))
+            .collect();
+        Ok(PySweepResult {
+            omegas,
+            integral: out.values,
+            amplification: amp,
+            error: out.errors,
+            method: "slice-batch".to_string(),
+            inner_solves: out.inner_solves,
+            groups: out.groups,
+        })
+    }
+
+    /// Batched source map (see `PointMassField.map`).
+    #[pyo3(signature = (beta0s, beta1s, omega, *, tol=None, margin=None, margin_outer=None, band_ratio=None))]
+    fn map(
+        &self,
+        beta0s: Vec<f64>,
+        beta1s: Vec<f64>,
+        omega: f64,
+        tol: Option<f64>,
+        margin: Option<f64>,
+        margin_outer: Option<f64>,
+        band_ratio: Option<f64>,
+    ) -> PyResult<PyMapResult> {
+        if !(omega > 0.0) {
+            return Err(PyValueError::new_err("omega must be > 0"));
+        }
+        let cfg = batch_cfg(omega, tol, margin, margin_outer, band_ratio);
+        let batch = FieldBatch {
+            omegas: vec![omega],
+            beta0s: beta0s.clone(),
+            beta1s: beta1s.clone(),
+        };
+        let out = slice_field_batch_g(&self.inner, &batch, &cfg).map_err(map_err)?;
+        let m1 = beta1s.len();
+        let norm = free_space(2, omega);
+        let mut integral = Vec::with_capacity(beta0s.len());
+        let mut amplification = Vec::with_capacity(beta0s.len());
+        let mut error = Vec::with_capacity(beta0s.len());
+        for i0 in 0..beta0s.len() {
+            let lo = i0 * m1;
+            let hi = lo + m1;
+            integral.push(out.values[lo..hi].to_vec());
+            amplification.push(out.values[lo..hi].iter().map(|v| *v / norm).collect());
+            error.push(out.errors[lo..hi].to_vec());
+        }
+        Ok(PyMapResult {
+            beta0s,
+            beta1s,
+            omega,
+            integral,
+            amplification,
+            error,
+            method: "slice-batch".to_string(),
+            inner_solves: out.inner_solves,
+            groups: out.groups,
+        })
+    }
+}
+
 #[pymodule]
 fn fastpiclef(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__doc__", "Fast Picard-Lefschetz Fresnel-integral / wave-optics lensing solver.")?;
@@ -574,5 +1094,12 @@ fn fastpiclef(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRationalLens2D>()?;
     m.add_class::<PyPointMass>()?;
     m.add_class::<PyPointMassField>()?;
+    m.add_class::<PySweepResult>()?;
+    m.add_class::<PyMapResult>()?;
+    m.add_class::<PyLensField>()?;
+    m.add_class::<PyPointComp>()?;
+    m.add_class::<PySisComp>()?;
+    m.add_class::<PyCisComp>()?;
+    m.add_class::<PyNfwComp>()?;
     Ok(())
 }

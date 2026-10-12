@@ -171,9 +171,176 @@ where
     AdaptiveResult { value, error, evals, capped }
 }
 
+/// Knobs of one *vector-valued* adaptive integration: like [`AdaptiveConfig`]
+/// but with one roundoff `floor` per component (the RC batches run many
+/// frequencies and slice positions at once, each carrying its own phase scale).
+#[derive(Debug, Clone)]
+pub struct AdaptiveVecConfig {
+    /// Acceptance tolerance per unit length (all components).
+    pub tol: f64,
+    /// Per-component roundoff floors (accept a panel when every component
+    /// agrees to its floor times its own `|f|` mass).
+    pub floors: Vec<f64>,
+    /// Panels shorter than this are accepted with their `|f|` mass budgeted.
+    pub min_len: f64,
+    /// Stop refining after this many node evaluations; the unrefined remainder
+    /// is budgeted into the errors and `capped` is set.
+    pub max_panels: usize,
+}
+
+/// Result of one vector-valued adaptive integration.
+#[derive(Debug, Clone)]
+pub struct AdaptiveVecResult {
+    pub values: Vec<Complex64>,
+    /// Conservative per-component error estimate (same rule as [`Integrate`]).
+    pub errors: Vec<f64>,
+    /// Node evaluations (20 per panel call, as in the scalar version).
+    pub evals: usize,
+    pub capped: bool,
+}
+
+/// One GL20 evaluation of a *vector* integrand on `[a, b]`: `f(t, values,
+/// errors)` fills one value and absolute error per component.  Nodes are
+/// evaluated in a fixed order (rayon-parallel when requested, bitwise
+/// identical to serial), then reduced sequentially.
+fn gl20_vec<F>(f: &F, a: f64, b: f64, m: usize, parallel: bool) -> (Vec<Complex64>, Vec<f64>, Vec<f64>)
+where
+    F: Fn(f64, &mut [Complex64], &mut [f64]) + Sync,
+{
+    let (x, w) = gl_rule();
+    let c = 0.5 * (a + b);
+    let h = 0.5 * (b - a);
+    let nodes: Vec<f64> = x.iter().map(|&xi| c + h * xi).collect();
+    let mut valbuf = vec![Complex64::new(0.0, 0.0); GL_N * m];
+    let mut errbuf = vec![0.0f64; GL_N * m];
+    if parallel {
+        valbuf
+            .par_chunks_mut(m)
+            .zip(errbuf.par_chunks_mut(m))
+            .zip(nodes.par_iter())
+            .for_each(|((vr, er), &t)| f(t, vr, er));
+    } else {
+        for (i, &t) in nodes.iter().enumerate() {
+            f(t, &mut valbuf[i * m..(i + 1) * m], &mut errbuf[i * m..(i + 1) * m]);
+        }
+    }
+    let mut values = vec![Complex64::new(0.0, 0.0); m];
+    let mut masses = vec![0.0f64; m];
+    let mut errs = vec![0.0f64; m];
+    for (i, &wi) in w.iter().enumerate() {
+        let vr = &valbuf[i * m..(i + 1) * m];
+        let er = &errbuf[i * m..(i + 1) * m];
+        for k in 0..m {
+            // A non-finite component (a node exactly on a pinch) counts as 0.
+            let v = if vr[k].re.is_finite() && vr[k].im.is_finite() {
+                vr[k]
+            } else {
+                Complex64::new(0.0, 0.0)
+            };
+            values[k] += v * wi;
+            masses[k] += v.norm() * wi;
+            errs[k] += er[k] * wi;
+        }
+    }
+    for k in 0..m {
+        values[k] *= h;
+        masses[k] *= h.abs();
+        errs[k] = (errs[k] * h).abs();
+    }
+    (values, masses, errs)
+}
+
+/// Vector-valued adaptive GL20 on `[a, b]`: `f(t, values, errors)` fills the
+/// component values and their absolute errors at one node.  A panel is
+/// accepted only when `every` component passes the rule (tol per unit length,
+/// or its own roundoff floor times its `|f|` mass, or `min_len`); components
+/// are otherwise tracked independently.  `parallel` evaluates a panel's nodes
+/// with rayon in fixed order, so results are bitwise identical to serial.
+///
+/// With `floors = &[floor]` and an integrand writing a single component this
+/// reproduces [`integrate`] bitwise (unit-tested) — the refactor guard for the
+/// batched RC kernels.
+pub fn integrate_vec<F>(
+    f: &F,
+    a: f64,
+    b: f64,
+    cfg: &AdaptiveVecConfig,
+    parallel: bool,
+) -> AdaptiveVecResult
+where
+    F: Fn(f64, &mut [Complex64], &mut [f64]) + Sync,
+{
+    let m = cfg.floors.len();
+    assert!(m > 0, "integrate_vec needs at least one component");
+    let mut values = vec![Complex64::new(0.0, 0.0); m];
+    let mut errors = vec![0.0f64; m];
+    let mut evals = 0usize;
+    let mut capped = false;
+
+    let (whole, whole_mass, whole_err) = gl20_vec(f, a, b, m, parallel);
+    evals += GL_N;
+    // (lo, hi, whole values, whole |f| masses, whole propagated errors)
+    let mut stack = vec![(a, b, whole, whole_mass, whole_err)];
+    while let Some((lo, hi, whole, whole_mass, whole_err)) = stack.pop() {
+        if evals >= cfg.max_panels {
+            for k in 0..m {
+                values[k] += whole[k];
+                errors[k] += whole_err[k] + whole_mass[k];
+            }
+            capped = true;
+            continue;
+        }
+        let mid = 0.5 * (lo + hi);
+        let (l, lm, le) = gl20_vec(f, lo, mid, m, parallel);
+        let (r, rm, re) = gl20_vec(f, mid, hi, m, parallel);
+        evals += 2 * GL_N;
+        let len = hi - lo;
+        let mut accept = true;
+        for k in 0..m {
+            let diff = (l[k] + r[k] - whole[k]).norm();
+            if !(diff <= cfg.tol * len || diff <= cfg.floors[k] * (lm[k] + rm[k]) || len < cfg.min_len)
+            {
+                accept = false;
+                break;
+            }
+        }
+        if accept {
+            for k in 0..m {
+                let diff = (l[k] + r[k] - whole[k]).norm();
+                values[k] += l[k] + r[k];
+                errors[k] += diff + le[k] + re[k];
+            }
+        } else {
+            stack.push((lo, mid, l, lm, le));
+            stack.push((mid, hi, r, rm, re));
+        }
+    }
+    // Whatever is still on the stack when the panel budget ran out.
+    while let Some((_, _, whole, whole_mass, whole_err)) = stack.pop() {
+        for k in 0..m {
+            values[k] += whole[k];
+            errors[k] += whole_err[k] + whole_mass[k];
+        }
+        capped = true;
+    }
+    AdaptiveVecResult { values, errors, evals, capped }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Wrap a scalar integrand as a single-component vector integrand.
+    fn as_vec<F>(f: &F) -> impl Fn(f64, &mut [Complex64], &mut [f64]) + Sync + '_
+    where
+        F: Fn(f64) -> (Complex64, f64) + Sync,
+    {
+        move |t, v, e| {
+            let (a, b) = f(t);
+            v[0] = a;
+            e[0] = b;
+        }
+    }
 
     #[test]
     fn gl20_exact_on_polynomials() {
@@ -258,5 +425,74 @@ mod tests {
         let p = integrate(&f, -3.0, 3.0, &cfg, true);
         assert_eq!(s.value, p.value);
         assert_eq!(s.evals, p.evals);
+    }
+
+    #[test]
+    fn vec_matches_scalar_for_one_component_bitwise() {
+        // The refactor guard: integrate_vec with a single component and floor
+        // must reproduce `integrate` bit for bit (values, errors, evals).
+        let cases: Vec<Box<dyn Fn(f64) -> (Complex64, f64) + Sync>> = vec![
+            Box::new(|x: f64| (Complex64::from_polar(1.0, 30.0 * (x * x - 0.4)), 0.0)),
+            Box::new(|x: f64| (Complex64::from((x - 0.11).abs().sqrt()), 0.0)),
+            Box::new(|x: f64| (Complex64::new((x * x).exp() * 0.3, (x + 1.0).ln()), x.abs() * 1e-16)),
+        ];
+        for f in &cases {
+            let scfg = AdaptiveConfig { tol: 1e-13, floor: 1e-15, min_len: 1e-10, max_panels: 50_000 };
+            let s = integrate(f, 0.0, 2.0, &scfg, false);
+            let vcfg = AdaptiveVecConfig { tol: 1e-13, floors: vec![1e-15], min_len: 1e-10, max_panels: 50_000 };
+            let fv = as_vec(f);
+            let v = integrate_vec(&fv, 0.0, 2.0, &vcfg, false);
+            assert_eq!(v.values[0], s.value, "value bits differ");
+            assert_eq!(v.errors[0], s.error, "error bits differ");
+            assert_eq!(v.evals, s.evals, "evals differ");
+            let vp = integrate_vec(&fv, 0.0, 2.0, &vcfg, true);
+            assert_eq!(vp.values[0], s.value, "parallel value bits differ");
+            assert_eq!(vp.errors[0], s.error, "parallel error bits differ");
+        }
+    }
+
+    #[test]
+    fn vec_components_are_independent_and_error_honest() {
+        // One smooth component, one oscillatory: the vector acceptance must
+        // refine for the *worst* component while each error covers its own
+        // deviation from a tightly refined scalar reference.
+        let f = |t: f64, v: &mut [Complex64], e: &mut [f64]| {
+            v[0] = Complex64::new(1.0 / (1.0 + t * t), 0.0);
+            v[1] = Complex64::from_polar(1.0, 40.0 * t);
+            e[0] = 0.0;
+            e[1] = 0.0;
+        };
+        let vcfg = AdaptiveVecConfig { tol: 1e-14, floors: vec![1e-16, 1e-16], min_len: 1e-12, max_panels: 200_000 };
+        let r = integrate_vec(&f, -3.0, 3.0, &vcfg, false);
+        let rp = integrate_vec(&f, -3.0, 3.0, &vcfg, true);
+        assert_eq!(r.values[0], rp.values[0]);
+        assert_eq!(r.values[1], rp.values[1]);
+        // Exact references: int 1/(1+t^2) = 2 atan(3); int e^{i 40 t} = sin(120)/20.
+        let exact0 = Complex64::new(2.0 * 3.0_f64.atan(), 0.0);
+        let exact1 = Complex64::new(120.0_f64.sin() / 20.0, 0.0);
+        assert!(
+            (r.values[0] - exact0).norm() < 1e-12,
+            "smooth component off: {:.3e}",
+            (r.values[0] - exact0).norm()
+        );
+        assert!(
+            (r.values[1] - exact1).norm() < 1e-12,
+            "oscillatory component off: {:.3e}",
+            (r.values[1] - exact1).norm()
+        );
+        // Honesty at the roundoff floor: the estimator sums accepted-panel
+        // disagreements, so it can under-cover by a couple of ulps of the
+        // *value* when the true error itself is at that level.
+        let allowance = |v: Complex64| 8.0 * f64::EPSILON * v.norm();
+        for (k, exact) in [(0, exact0), (1, exact1)] {
+            let true_err = (r.values[k] - exact).norm();
+            assert!(
+                r.errors[k] + allowance(r.values[k]) >= true_err,
+                "component {k}: estimate {:.3e} does not cover true error {:.3e}",
+                r.errors[k],
+                true_err
+            );
+            assert!(r.errors[k] < 1e-12, "component {k}: estimate suspiciously loose");
+        }
     }
 }

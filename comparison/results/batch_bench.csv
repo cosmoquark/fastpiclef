@@ -1,0 +1,63 @@
+case,n_lenses,grid,n_omega,threads,mode,wall_s,note
+1d-plpi-grid,1,512-betas,1,1,batch-rc,6.689686e-2,shared contour
+1d-plpi-grid,1,512-betas,1,1,thimble-loop,2.385021e-1,per-point production
+1d-plpi-grid,1,512-betas,1,1,rc-loop,3.288311e-1,independent contours
+2d-map,1,16x16,1,1,batch,7.670553e-1,groups=1
+2d-map,1,16x16,1,1,scalar-sub8,2.127811e1,extrapolated from 8 points (0.0831s/pt); measured 0.6649s
+2d-map,1,16x16,1,1,batch,1.053833e0,groups=1
+2d-map,1,16x16,1,1,scalar-sub8,3.391584e1,extrapolated from 8 points (0.1325s/pt); measured 1.0599s
+2d-map,1,64x64,1,1,batch,2.629433e0,groups=1
+2d-map,1,64x64,1,1,scalar-sub8,3.802759e2,extrapolated from 8 points (0.0928s/pt); measured 0.7427s
+2d-map,1,64x64,1,1,batch,3.281330e0,groups=1
+2d-map,1,64x64,1,1,scalar-sub8,5.764361e2,extrapolated from 8 points (0.1407s/pt); measured 1.1259s
+2d-map,3,16x16,1,1,batch,2.851996e0,groups=1
+2d-map,3,16x16,1,1,scalar-sub8,8.335341e1,extrapolated from 8 points (0.3256s/pt); measured 2.6048s
+2d-map,3,16x16,1,1,batch,4.481416e0,groups=1
+2d-map,3,16x16,1,1,scalar-sub8,2.630972e2,extrapolated from 8 points (1.0277s/pt); measured 8.2218s
+2d-map,3,64x64,1,1,batch,5.902366e0,groups=1
+2d-map,3,64x64,1,1,scalar-sub8,1.386446e3,extrapolated from 8 points (0.3385s/pt); measured 2.7079s
+2d-map,3,64x64,1,1,batch,9.488255e0,groups=1
+2d-map,3,64x64,1,1,scalar-sub8,4.973627e3,extrapolated from 8 points (1.2143s/pt); measured 9.7141s
+2d-map,40,16x16,1,1,batch,1.480277e2,groups=1
+2d-map,40,16x16,1,1,scalar-sub8,1.409650e4,extrapolated from 8 points (55.0645s/pt); measured 440.5157s
+2d-map,40,16x16,1,1,batch,9.920327e1,groups=1
+2d-map,40,16x16,1,1,scalar-sub8,3.495648e4,extrapolated from 8 points (136.5488s/pt); measured 1092.3900s
+2d-map,40,64x64,1,1,batch,1.731265e2,groups=1
+2d-map,40,64x64,1,1,scalar-sub8,1.931441e5,extrapolated from 8 points (47.1543s/pt); measured 377.2346s
+2d-map,40,64x64,1,1,batch,1.536522e2,groups=1
+2d-map,40,64x64,1,1,scalar-sub8,2.022248e5,extrapolated from 8 points (49.3713s/pt); measured 394.9703s
+sweep,1,point,200,1,batch,1.371371e1,groups=3
+sweep,1,point,200,1,scalar-sub6,1.444666e1,extrapolated from 6 omegas (0.0722s/freq); measured 0.4334s
+sweep,40,point,200,1,batch,8.596998e2,groups=3
+sweep,40,point,200,1,scalar-sub6,1.036706e4,extrapolated from 6 omegas (51.8353s/freq); measured 311.0118s
+1d-plpi-grid,1,512-betas,1,12,batch-rc,3.728004e-2,shared contour
+1d-plpi-grid,1,512-betas,1,12,thimble-loop,1.674428e-1,per-point production
+1d-plpi-grid,1,512-betas,1,12,rc-loop,4.463499e-1,independent contours
+2d-map,1,16x16,1,12,batch,1.150273e-1,groups=1
+2d-map,1,16x16,1,12,scalar-sub8,3.978078e0,extrapolated from 8 points (0.0155s/pt); measured 0.1243s
+2d-map,1,16x16,1,12,batch,1.967269e-1,groups=1
+2d-map,1,16x16,1,12,scalar-sub8,7.040072e0,extrapolated from 8 points (0.0275s/pt); measured 0.2200s
+2d-map,1,64x64,1,12,batch,3.956263e-1,groups=1
+2d-map,1,64x64,1,12,scalar-sub8,6.436877e1,extrapolated from 8 points (0.0157s/pt); measured 0.1257s
+2d-map,1,64x64,1,12,batch,6.419665e-1,groups=1
+2d-map,1,64x64,1,12,scalar-sub8,1.072451e2,extrapolated from 8 points (0.0262s/pt); measured 0.2095s
+2d-map,3,16x16,1,12,batch,3.269441e-1,groups=1
+2d-map,3,16x16,1,12,scalar-sub8,1.496925e1,extrapolated from 8 points (0.0585s/pt); measured 0.4678s
+2d-map,3,16x16,1,12,batch,5.263831e-1,groups=1
+2d-map,3,16x16,1,12,scalar-sub8,2.755804e1,extrapolated from 8 points (0.1076s/pt); measured 0.8612s
+2d-map,3,64x64,1,12,batch,9.700396e-1,groups=1
+2d-map,3,64x64,1,12,scalar-sub8,2.497673e2,extrapolated from 8 points (0.0610s/pt); measured 0.4878s
+2d-map,3,64x64,1,12,batch,1.472387e0,groups=1
+2d-map,3,64x64,1,12,scalar-sub8,4.565079e2,extrapolated from 8 points (0.1115s/pt); measured 0.8916s
+2d-map,40,16x16,1,12,batch,1.285117e1,groups=1
+2d-map,40,16x16,1,12,scalar-sub8,1.845853e3,extrapolated from 8 points (7.2104s/pt); measured 57.6829s
+2d-map,40,16x16,1,12,batch,2.512471e1,groups=1
+2d-map,40,16x16,1,12,scalar-sub8,4.184900e3,extrapolated from 8 points (16.3473s/pt); measured 130.7781s
+2d-map,40,64x64,1,12,batch,3.542291e1,groups=1
+2d-map,40,64x64,1,12,scalar-sub8,4.388350e4,extrapolated from 8 points (10.7137s/pt); measured 85.7100s
+2d-map,40,64x64,1,12,batch,5.563459e1,groups=1
+2d-map,40,64x64,1,12,scalar-sub8,5.210940e4,extrapolated from 8 points (12.7220s/pt); measured 101.7762s
+sweep,1,point,200,12,batch,3.871598e0,groups=3
+sweep,1,point,200,12,scalar-sub6,4.069843e0,extrapolated from 6 omegas (0.0203s/freq); measured 0.1221s
+sweep,40,point,200,12,batch,2.141757e2,groups=3
+sweep,40,point,200,12,scalar-sub6,1.799867e3,extrapolated from 6 omegas (8.9993s/freq); measured 53.9960s
