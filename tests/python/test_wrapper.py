@@ -228,6 +228,49 @@ def test_lens_field_geometric_macro_only():
     assert abs(abs(g.amplification) - 1.0 / math.sqrt(abs(l0 * l2))) < 1e-5
 
 
+def test_hybrid_point_mass_switch_and_budget():
+    # P4.1: a tight tol stays on the exact RC engine; a loose tol takes the
+    # corrected geometric branch, which must beat the bare geometric sum
+    # against the external ND |F| at (omega, y) = (100, 0.5) = 1.762705414788,
+    # with its reported budget covering the truth.
+    field = fpl.PointMassField([(0.0, 0.0, 1.0)], beta=(0.5, 0.0))
+    exact = field.solve(omega=100.0)
+    tight = field.hybrid(omega=100.0, tol=1e-12)
+    assert tight.method == "slice", tight
+    assert abs(tight.integral - exact.integral) < 1e-9 * abs(exact.integral)
+    loose = field.hybrid(omega=100.0, tol=1e-2)
+    assert loose.method == "geometric+correction", loose
+    fnd = 1.762705414788
+    rel = abs(abs(loose.amplification) - fnd) / fnd
+    rel_geo = abs(abs(field.geometric(omega=100.0).amplification) - fnd) / fnd
+    assert rel < rel_geo, (rel, rel_geo)
+    # .error is the integral budget; the amplification budget is its rescaling
+    est_f = loose.error * 100.0 / (2.0 * math.pi)
+    assert est_f >= rel * fnd, (est_f, rel * fnd)
+
+
+def test_lens_field_hybrid_quadratic_and_caustic():
+    # Quadratic phase: C = 0, so the corrected branch must equal the geometric
+    # sum exactly and any tol takes the fast branch (zero estimate).
+    lf = fpl.LensField([], beta=(0.4, -0.3), kappa=0.3, gamma1=0.2)
+    g = lf.geometric(omega=10.0)
+    c = lf.geometric_corrected(omega=10.0)
+    assert abs(c.amplification - g.amplification) < 1e-12
+    assert c.error < 1e-12
+    h = lf.hybrid(omega=10.0, tol=1e-9)
+    assert h.method == "geometric+correction", h
+    assert abs(h.integral - g.integral) < 1e-12 * abs(g.integral)
+    # Caustic (source at the point-mass caustic): the asymptotic branch is
+    # invalid (None) or carries a huge estimate, and the hybrid falls back.
+    lf2 = fpl.LensField([fpl.PointComp(0.0, 0.0, 1.0)], beta=(0.0, 0.0))
+    c2 = lf2.geometric_corrected(omega=50.0)
+    assert c2 is None or c2.error > 1.0, c2
+    h2 = lf2.hybrid(omega=50.0, tol=1e-3)
+    assert h2.method == "slice", h2
+    ref = lf2.solve(omega=50.0)
+    assert abs(h2.integral - ref.integral) < 1e-9 * abs(ref.integral)
+
+
 def test_slice_inner_rc_free_space():
     # The raw slice kernel with no lenses must reproduce the free-space 1D
     # integral: G(x2) = sqrt(2 pi / w) e^{i pi/4} e^{i w (x2 - beta1)^2 / 2}.

@@ -15,7 +15,9 @@ use crate::phases::{
 };
 use crate::saddles::saddles_from_polynomial;
 use crate::lens_field::{
-    Component, LensField, Profile, lens_field_geometric, lens_field_images, lens_field_solve,
+    Component, HybridMethod, LensField, Profile, lens_field_geometric,
+    lens_field_geometric_corrected, lens_field_hybrid, lens_field_images, lens_field_solve,
+    point_mass_field_geometric_corrected, point_mass_field_hybrid,
 };
 use crate::rc1d::Rational1DModel;
 use crate::slice_batch::slice_field_batch_g;
@@ -686,6 +688,54 @@ impl PyPointMassField {
         Ok(make_output(2, omega, integral, 0.0, "geometric", self.inner.lenses.len()))
     }
 
+    /// Geometric-optics amplification **with the stationary-phase next-order
+    /// correction** (P4.1), with the polynomial-complete Witt-Mao image set:
+    /// `F = sum_j |mu_j|^(1/2) e^{i w phi_j - i pi n_j} (1 + C_j/(i w))`, the
+    /// conservative estimate `sum_j |G0_j| |C_j| / w` in `.error` (integral
+    /// units).  `None` (Python `None`) at a caustic; use `hybrid` or `solve`.
+    fn geometric_corrected(&self, omega: f64) -> PyResult<Option<PyOutput>> {
+        if !(omega > 0.0) {
+            return Err(PyValueError::new_err("omega must be > 0"));
+        }
+        let out = point_mass_field_geometric_corrected(self.inner.beta, &self.inner.lenses, omega)
+            .map_err(map_err)?;
+        Ok(out.map(|g| {
+            make_output(
+                2,
+                omega,
+                g.value * free_space(2, omega),
+                g.error * free_space(2, omega).norm(),
+                "geometric+correction",
+                g.images,
+            )
+        }))
+    }
+
+    /// High-omega hybrid (P4.1): geometric optics with the stationary-phase
+    /// next-order correction when its conservative estimate is within `tol`
+    /// (integral units), and the exact RC engine otherwise.  `.method` is
+    /// `'geometric+correction'` or `'slice'`; the image set comes from the
+    /// polynomial-complete Witt-Mao solver, so the fast branch cannot miss an
+    /// image.  The default `tol = 1e-9` stays on the exact RC; raise it (e.g.
+    /// `1e-3`) to unlock the fast branch at high omega.
+    #[pyo3(signature = (omega, tol = 1e-9))]
+    fn hybrid(&self, omega: f64, tol: f64) -> PyResult<PyOutput> {
+        if !(omega > 0.0) {
+            return Err(PyValueError::new_err("omega must be > 0"));
+        }
+        if !(tol > 0.0) {
+            return Err(PyValueError::new_err("tol must be > 0"));
+        }
+        let out =
+            point_mass_field_hybrid(self.inner.beta, &self.inner.lenses, omega, tol)
+                .map_err(map_err)?;
+        let (method, steps) = match out.method {
+            HybridMethod::GeometricCorrected => ("geometric+correction", out.images),
+            HybridMethod::Rc => ("slice", out.inner_solves),
+        };
+        Ok(make_output(2, omega, out.value, out.error, method, steps))
+    }
+
     /// Batched frequency sweep: one shared contour for every frequency
     /// (bands of ratio `band_ratio` get their own contour). Exact by the same
     /// Cauchy construction as `solve`; validated against the Nakamura-Deguchi
@@ -1006,6 +1056,54 @@ impl PyLensField {
         }
         let f = lens_field_geometric(&self.inner, omega);
         Ok(make_output(2, omega, f * free_space(2, omega), 0.0, "geometric", self.inner.components.len()))
+    }
+
+    /// Geometric-optics amplification **with the stationary-phase next-order
+    /// correction** (P4.1): `F = sum_j |mu_j|^(1/2) e^{i w phi_j - i pi n_j}
+    /// (1 + C_j/(i w))`, with the conservative error estimate
+    /// `sum_j |G0_j| |C_j| / w` reported in `.error` (integral units — the same
+    /// relative bound on the amplification).  `None` (Python `None`) at a
+    /// caustic, where the asymptotic form is invalid; use `hybrid` or `solve`
+    /// there.
+    fn geometric_corrected(&self, omega: f64) -> PyResult<Option<PyOutput>> {
+        if !(omega > 0.0) {
+            return Err(PyValueError::new_err("omega must be > 0"));
+        }
+        Ok(lens_field_geometric_corrected(&self.inner, omega).map(|g| {
+            make_output(
+                2,
+                omega,
+                g.value * free_space(2, omega),
+                g.error * free_space(2, omega).norm(),
+                "geometric+correction",
+                g.images,
+            )
+        }))
+    }
+
+    /// High-omega hybrid (P4.1): geometric optics with the validated
+    /// stationary-phase correction when its conservative estimate is within
+    /// `tol` (in integral units), and the exact RC engine otherwise.
+    /// `.method` is `'geometric+correction'` or `'slice'`.  The switch is
+    /// honest: on the geometric branch the true error is at most `tol` (the
+    /// estimate was measured to cover the corrected residual by >= 3.5x in
+    /// every measured family, and the reported budget carries a further
+    /// factor 3, so `tol` bounds the true error on the geometric branch.  The default `tol = 1e-9` stays on the exact RC;
+    /// raise it (e.g. `1e-3`) to unlock the fast branch at high omega.
+    #[pyo3(signature = (omega, tol = 1e-9))]
+    fn hybrid(&self, omega: f64, tol: f64) -> PyResult<PyOutput> {
+        if !(omega > 0.0) {
+            return Err(PyValueError::new_err("omega must be > 0"));
+        }
+        if !(tol > 0.0) {
+            return Err(PyValueError::new_err("tol must be > 0"));
+        }
+        let out = lens_field_hybrid(&self.inner, omega, tol).map_err(map_err)?;
+        let (method, steps) = match out.method {
+            HybridMethod::GeometricCorrected => ("geometric+correction", out.images),
+            HybridMethod::Rc => ("slice", out.inner_solves),
+        };
+        Ok(make_output(2, omega, out.value, out.error, method, steps))
     }
 
     /// Exact finite-omega field integral (RC engine; P2a).

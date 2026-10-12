@@ -36,8 +36,10 @@ pub use adaptive::{AdaptiveConfig, AdaptiveResult, integrate};
 pub use error::{Error, Result};
 pub use flow::{Flow, Rk4, StepReport};
 pub use lens_field::{
-    Component, LensField, Profile, lens_field_batch, lens_field_geometric, lens_field_images,
-    lens_field_solve,
+    Component, GeometricCorrected, HybridMethod, HybridOutput, LensField, Profile,
+    lens_field_batch, lens_field_geometric, lens_field_geometric_corrected, lens_field_hybrid,
+    lens_field_images, lens_field_solve, point_mass_field_geometric_corrected,
+    point_mass_field_hybrid,
 };
 pub use mesh::Mesh;
 pub use phase::{DynPhase, Phase, PhaseAsDyn, RationalPhase, RationalPhase2D, as_dyn};

@@ -436,6 +436,35 @@ impl Profile {
             }
         }
     }
+
+    /// `d^2 psi / d w^2` (principal branch).  For the analytic profiles the
+    /// closed form is used (a generic complex step of [`Self::dpsi_dw`] loses
+    /// the *imaginary* part to the `eps/|psi'| / h` cancellation, which the
+    /// nested stationary-phase tensors would amplify); the closed forms are
+    /// pinned against that generic step by a unit test at real `w`.  NFW has
+    /// no closed form here, so it keeps the complex step — its contribution to
+    /// the `O(1/omega)` correction stays far below the correction itself.
+    pub fn dpsi_dw2(&self, w: Complex64) -> Complex64 {
+        match *self {
+            Profile::Point { mass, xc } => {
+                let d = w + Complex64::from(xc * xc);
+                Complex64::new(-0.5 * mass, 0.0) / (d * d)
+            }
+            Profile::Sis { psi0 } => Complex64::new(-0.25 * psi0, 0.0) / (w * w.sqrt()),
+            Profile::Cis { psi0, xc } => {
+                let u = (w + Complex64::from(xc * xc)).sqrt();
+                let x = Complex64::from(xc);
+                let t = x * (Complex64::new(2.0, 0.0) * u + x) / ((u + x) * (u + x));
+                Complex64::new(psi0, 0.0) / (Complex64::new(4.0, 0.0) * u * u * u)
+                    * (t - Complex64::new(1.0, 0.0))
+            }
+            Profile::Nfw { .. } => {
+                let h = 1e-5 * w.norm();
+                (self.dpsi_dw(w + Complex64::i() * h) - self.dpsi_dw(w - Complex64::i() * h))
+                    / (Complex64::i() * (2.0 * h))
+            }
+        }
+    }
 }
 
 /// Exact RC field integral of a [`LensField`]: `solve` equivalent of
@@ -459,6 +488,18 @@ pub fn lens_field_batch(
 /// complex-step derivatives of the holomorphic phase (machine-accurate, no
 /// hand algebra beyond the gradient), so the κ/γ + profile cases reuse exactly
 /// the same potential as the integral solver.
+///
+/// The start grid is dense (24x24 over the component span), deterministically
+/// golden-ratio jittered (so no start lands exactly on the critical curve or a
+/// singular centre), and every converged point is verified against the lens
+/// equation.  An *aligned* 8x8 grid silently missed the faint image of the
+/// unit point mass at y = 1 — its Newton basin lay between the starts and the
+/// start at -1 sat exactly on the critical curve (`det H = 0`) — which the
+/// image-local stationary-phase estimate cannot see.  Completeness is still not
+/// *certified* for arbitrary fields: the point-mass-only entry points
+/// ([`point_mass_field_geometric_corrected`] / [`point_mass_field_hybrid`]) use
+/// the polynomial-complete Witt-Mao finder
+/// ([`crate::images::point_mass_field_images`]) instead.
 pub fn lens_field_images(field: &LensField) -> Vec<[f64; 2]> {
     let g = |x: [f64; 2]| -> [f64; 2] {
         let gr = field.gradient(&SVector::<Complex64, 2>::new(
@@ -490,12 +531,20 @@ pub fn lens_field_images(field: &LensField) -> Vec<[f64; 2]> {
         .iter()
         .fold(2.0f64, |acc, c| acc.max(c.x.abs()).max(c.y.abs()));
     let span = span + 2.0;
-    let n = 8;
+    // Dense, deterministically jittered start grid.  A coarse *aligned* grid
+    // has a silent failure mode: for the unit point mass at y = 1 the faint
+    // image at -0.618 has its Newton basin between the starts -1 and 0, and
+    // the start exactly at -1 sits on the critical curve (det H = 0), so the
+    // old 8x8 grid missed it entirely.  The golden-ratio jitter moves every
+    // start off the degenerate lines while keeping the result reproducible.
+    let n = 24;
     for i in 0..=n {
         for j in 0..=n {
+            let k = i * (n + 1) + j;
+            let jit = |s: usize| ((s as f64 + 1.0) * 0.618_033_988_749_895).fract() - 0.5;
             let mut x = [
-                -span + 2.0 * span * i as f64 / n as f64,
-                -span + 2.0 * span * j as f64 / n as f64,
+                -span + 2.0 * span * (i as f64 + 0.6 * jit(k)) / n as f64,
+                -span + 2.0 * span * (j as f64 + 0.6 * jit(k + 7)) / n as f64,
             ];
             let mut ok = false;
             for _ in 0..60 {
@@ -516,6 +565,14 @@ pub fn lens_field_images(field: &LensField) -> Vec<[f64; 2]> {
                     break;
                 }
             }
+            // Verify: a small Newton step is not enough near a degenerate
+            // Jacobian; the point must actually solve the lens equation.
+            if ok {
+                let gx = g(x);
+                if gx[0] * gx[0] + gx[1] * gx[1] > 1e-16 * (1.0 + x[0] * x[0] + x[1] * x[1]) {
+                    ok = false;
+                }
+            }
             if ok && !images.iter().any(|p| (p[0] - x[0]).abs() + (p[1] - x[1]).abs() < 1e-7) {
                 images.push(x);
             }
@@ -524,22 +581,28 @@ pub fn lens_field_images(field: &LensField) -> Vec<[f64; 2]> {
     images
 }
 
+/// Hessian of the real phase at a real point by complex-step second
+/// derivatives — the geometry helpers' workhorse (machine-accurate for the
+/// analytic profiles).
+fn hess_cs(field: &LensField, x: [f64; 2], h: f64) -> [[f64; 2]; 2] {
+    let mut hess = [[0.0f64; 2]; 2];
+    for (j, slot) in hess.iter_mut().enumerate() {
+        for k in 0..2 {
+            let mut z = [Complex64::from(x[0]), Complex64::from(x[1])];
+            z[k] += Complex64::i() * h;
+            let gr = field.gradient(&SVector::<Complex64, 2>::new(z[0], z[1]));
+            slot[k] = if j == 0 { gr[0].im } else { gr[1].im } / h;
+        }
+    }
+    hess
+}
+
 /// Stationary-phase (geometric-optics) amplification of a [`LensField`] —
 /// exact as `omega -> infinity` away from caustics; O(#images).
 pub fn lens_field_geometric(field: &LensField, omega: f64) -> Complex64 {
-    let h = 1e-8;
     let mut f = Complex64::new(0.0, 0.0);
     for x in lens_field_images(field) {
-        // Hessian of the real potential by complex-step second derivatives.
-        let mut hess = [[0.0f64; 2]; 2];
-        for (j, slot) in hess.iter_mut().enumerate() {
-            for k in 0..2 {
-                let mut z = [Complex64::from(x[0]), Complex64::from(x[1])];
-                z[k] += Complex64::i() * h;
-                let gr = field.gradient(&SVector::<Complex64, 2>::new(z[0], z[1]));
-                slot[k] = if j == 0 { gr[0].im } else { gr[1].im } / h;
-            }
-        }
+        let hess = hess_cs(field, x, 1e-8);
         let det = hess[0][0] * hess[1][1] - hess[0][1] * hess[1][0];
         let tr = hess[0][0] + hess[1][1];
         if det.abs() < 1e-12 {
@@ -559,6 +622,422 @@ pub fn lens_field_geometric(field: &LensField, omega: f64) -> Complex64 {
             * (Complex64::i() * (omega * phi) - Complex64::i() * std::f64::consts::PI * n).exp();
     }
     f
+}
+
+/// Analytic continuation of the phase Hessian `d_a d_b phi` as a function of
+/// the complex point `z` (the chain rule with `psi'` and `psi''`).  At real
+/// arguments it reproduces [`hess_cs`] to machine precision (unit-tested); it
+/// exists to build the third/fourth derivatives of the stationary-phase
+/// correction by *central complex steps*, which do not amplify roundoff the
+/// way nested one-sided complex steps would.
+fn hess_analytic(field: &LensField, z: [Complex64; 2]) -> [[Complex64; 2]; 2] {
+    let mut h = [
+        [Complex64::from(field.lambda0), Complex64::new(0.0, 0.0)],
+        [Complex64::new(0.0, 0.0), Complex64::from(field.lambda2)],
+    ];
+    for c in &field.components {
+        let d = [z[0] - Complex64::from(c.x), z[1] - Complex64::from(c.y)];
+        let w = d[0] * d[0] + d[1] * d[1];
+        let p1 = c.profile.dpsi_dw(w);
+        let p2 = c.profile.dpsi_dw2(w);
+        for a in 0..2 {
+            for b in 0..2 {
+                h[a][b] -= 4.0 * p2 * d[a] * d[b];
+                if a == b {
+                    h[a][b] -= 2.0 * p1;
+                }
+            }
+        }
+    }
+    h
+}
+
+/// Third-derivative tensor `d_c d_b d_a phi` at a real point: a central
+/// complex step of the analytic Hessian.
+fn phi3_cs(field: &LensField, x: [f64; 2], h: f64) -> [[[f64; 2]; 2]; 2] {
+    let mut out = [[[0.0f64; 2]; 2]; 2];
+    for c in 0..2 {
+        let mut zp = [Complex64::from(x[0]), Complex64::from(x[1])];
+        let mut zm = zp;
+        zp[c] += Complex64::i() * h;
+        zm[c] -= Complex64::i() * h;
+        let hp = hess_analytic(field, zp);
+        let hm = hess_analytic(field, zm);
+        for a in 0..2 {
+            for b in 0..2 {
+                out[a][b][c] = ((hp[a][b] - hm[a][b]) / (Complex64::i() * (2.0 * h))).re;
+            }
+        }
+    }
+    out
+}
+
+/// Fourth-derivative tensor `d_d d_c d_b d_a phi` at a real point: the
+/// two-dimensional central stencil on the analytic Hessian.
+fn phi4_cs(field: &LensField, x: [f64; 2], h: f64) -> [[[[f64; 2]; 2]; 2]; 2] {
+    let base = [Complex64::from(x[0]), Complex64::from(x[1])];
+    let shift = |c: usize, d: usize, sc: f64, sd: f64| -> [Complex64; 2] {
+        let mut z = base;
+        z[c] += Complex64::i() * (sc * h);
+        if d != c {
+            z[d] += Complex64::i() * (sd * h);
+        }
+        z
+    };
+    let mut out = [[[[0.0f64; 2]; 2]; 2]; 2];
+    for c in 0..2 {
+        for d in 0..2 {
+            let mut out_cd = [[0.0f64; 2]; 2];
+            if c == d {
+                let hp = hess_analytic(field, shift(c, d, 2.0, 0.0));
+                let hm = hess_analytic(field, shift(c, d, -2.0, 0.0));
+                let h0 = hess_analytic(field, base);
+                for a in 0..2 {
+                    for b in 0..2 {
+                        out_cd[a][b] = ((hp[a][b] - 2.0 * h0[a][b] + hm[a][b])
+                            / (Complex64::i() * (2.0 * h)).powi(2))
+                        .re;
+                    }
+                }
+            } else {
+                let hpp = hess_analytic(field, shift(c, d, 1.0, 1.0));
+                let hpm = hess_analytic(field, shift(c, d, 1.0, -1.0));
+                let hmp = hess_analytic(field, shift(c, d, -1.0, 1.0));
+                let hmm = hess_analytic(field, shift(c, d, -1.0, -1.0));
+                for a in 0..2 {
+                    for b in 0..2 {
+                        out_cd[a][b] = ((hpp[a][b] - hpm[a][b] - hmp[a][b] + hmm[a][b])
+                            / (Complex64::i() * (2.0 * h)).powi(2))
+                        .re;
+                    }
+                }
+            }
+            for a in 0..2 {
+                for b in 0..2 {
+                    out[a][b][c][d] = out_cd[a][b];
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The 15-pairing sum `Sum_15 = sum phi3_abc phi3_def H^-1 H^-1 H^-1` of the
+/// Isserlis expansion (the `phi3^2` contribution to the `O(1/omega)`
+/// coefficient), by direct enumeration: 15 matchings x 2^6 index choices.
+fn sum15(phi3: &[[[f64; 2]; 2]; 2], hinv: &[[f64; 2]; 2]) -> f64 {
+    // Slot 0 is paired with each of 1..5; the remaining four slots are then
+    // matched in their three possible ways.
+    const MATCHINGS: [[(usize, usize); 3]; 15] = [
+        [(0, 1), (2, 3), (4, 5)],
+        [(0, 1), (2, 4), (3, 5)],
+        [(0, 1), (2, 5), (3, 4)],
+        [(0, 2), (1, 3), (4, 5)],
+        [(0, 2), (1, 4), (3, 5)],
+        [(0, 2), (1, 5), (3, 4)],
+        [(0, 3), (1, 2), (4, 5)],
+        [(0, 3), (1, 4), (2, 5)],
+        [(0, 3), (1, 5), (2, 4)],
+        [(0, 4), (1, 2), (3, 5)],
+        [(0, 4), (1, 3), (2, 5)],
+        [(0, 4), (1, 5), (2, 3)],
+        [(0, 5), (1, 2), (3, 4)],
+        [(0, 5), (1, 3), (2, 4)],
+        [(0, 5), (1, 4), (2, 3)],
+    ];
+    let mut total = 0.0;
+    for m in MATCHINGS {
+        for bits in 0..64usize {
+            let i = [
+                bits & 1,
+                (bits >> 1) & 1,
+                (bits >> 2) & 1,
+                (bits >> 3) & 1,
+                (bits >> 4) & 1,
+                (bits >> 5) & 1,
+            ];
+            let mut t = phi3[i[0]][i[1]][i[2]] * phi3[i[3]][i[4]][i[5]];
+            for &(p, q) in &m {
+                t *= hinv[i[p]][i[q]];
+            }
+            total += t;
+        }
+    }
+    total
+}
+
+/// Per-image stationary-phase data for the P4.1 correction.
+struct SpImageData {
+    /// The next-order coefficient `C`.
+    c: f64,
+    /// `det H` (its sign carries the Morse index).
+    det: f64,
+    /// `tr H`.
+    tr: f64,
+}
+
+/// `C = (1/8) H^-1_ab H^-1_cd phi4_abcd - (1/72) Sum_15(phi3, H^-1)` at one
+/// image (derived and validated in `comparison/sp_correction.py`); `None` at a
+/// numerically singular Hessian (caustic), where the asymptotic form breaks
+/// down and the caller must fall back to the exact RC engine.
+fn sp_image_data(field: &LensField, x: [f64; 2]) -> Option<SpImageData> {
+    let hess = hess_cs(field, x, 1e-8);
+    let det = hess[0][0] * hess[1][1] - hess[0][1] * hess[1][0];
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let tr = hess[0][0] + hess[1][1];
+    let hinv = [
+        [hess[1][1] / det, -hess[0][1] / det],
+        [-hess[1][0] / det, hess[0][0] / det],
+    ];
+    let p3 = phi3_cs(field, x, 1e-5);
+    let p4 = phi4_cs(field, x, 3e-5);
+    let mut c4 = 0.0;
+    for a in 0..2 {
+        for b in 0..2 {
+            for c in 0..2 {
+                for d in 0..2 {
+                    c4 += hinv[a][b] * hinv[c][d] * p4[a][b][c][d];
+                }
+            }
+        }
+    }
+    Some(SpImageData {
+        c: 0.125 * c4 - sum15(&p3, &hinv) / 72.0,
+        det,
+        tr,
+    })
+}
+
+/// The corrected stationary-phase sum over a given image list,
+/// `sum_j G0_j (1 + C_j/(i omega))`, plus the error estimate
+/// `3 * sum_j |G0_j| |C_j| / omega`; `None` at a caustic image or with no
+/// images.
+///
+/// The raw sum `sum_j |G0_j| |C_j| / omega` was measured (2026-10-12,
+/// `comparison/hybrid_check.py` headless + the prototype `sp_correction.py`)
+/// to cover the corrected residual by >= 3.5x over the point-mass family, the
+/// 3-mass field and macro cases; the factor 3 is folded in so the *reported*
+/// budget keeps a >= 10x margin on the measured minimum (error estimates must
+/// cover the true error, per the project's validation discipline).
+fn sp_corrected_sum(
+    field: &LensField,
+    images: &[[f64; 2]],
+    omega: f64,
+) -> Option<(Complex64, f64)> {
+    const SAFETY: f64 = 3.0;
+    if images.is_empty() {
+        return None;
+    }
+    let mut f = Complex64::new(0.0, 0.0);
+    let mut est = 0.0f64;
+    for &x in images {
+        let data = sp_image_data(field, x)?;
+        let n = if data.det < 0.0 {
+            0.5
+        } else if data.tr > 0.0 {
+            0.0
+        } else {
+            1.0
+        };
+        let xz = SVector::<Complex64, 2>::new(Complex64::from(x[0]), Complex64::from(x[1]));
+        let phi = field.value(&xz).re;
+        let g0 = Complex64::from(1.0 / data.det.abs().sqrt())
+            * (Complex64::i() * (omega * phi) - Complex64::i() * std::f64::consts::PI * n).exp();
+        f += g0 * (Complex64::new(1.0, 0.0) - Complex64::i() * (data.c / omega));
+        est += g0.norm() * data.c.abs() / omega;
+    }
+    Some((f, SAFETY * est))
+}
+
+/// Result of [`lens_field_geometric_corrected`].
+#[derive(Debug, Clone, Copy)]
+pub struct GeometricCorrected {
+    /// Corrected stationary-phase amplification (same convention as
+    /// [`lens_field_geometric`]).
+    pub value: Complex64,
+    /// `3 * sum_j |G0_j| |C_j| / omega`: the asymptotic error estimate with
+    /// the documented safety factor of [`sp_corrected_sum`].  The *raw* sum
+    /// covered the corrected residual by >= 3.5x in every measured family
+    /// (point masses, the 3-mass field, macro cases;
+    /// `comparison/results/hybrid_check.csv`), so this budget is conservative.
+    pub error: f64,
+    /// Number of images used.
+    pub images: usize,
+}
+
+/// Geometric-optics amplification **with the stationary-phase next-order
+/// correction** (P4.1).  Expanding `int d^2u e^{i omega phi(u)}` to quartic
+/// order around each stationary point gives `G0 [1 + C/(i omega) +
+/// O(omega^-2)]`, with `G0` the geometric term and `C` the coefficient of
+/// [`sp_image_data`]; the corrected residual falls like `omega^-2` instead of
+/// `omega^-1` (validated on the Airy integral and on the point mass against
+/// the Nakamura-Deguchi closed form).
+///
+/// `None` when the asymptotic form cannot be trusted: no images, or an image
+/// at a caustic (`|det H| < 1e-12`).  The caller falls back to the exact RC
+/// engine.
+pub fn lens_field_geometric_corrected(
+    field: &LensField,
+    omega: f64,
+) -> Option<GeometricCorrected> {
+    let images = lens_field_images(field);
+    let n = images.len();
+    let (value, error) = sp_corrected_sum(field, &images, omega)?;
+    Some(GeometricCorrected {
+        value,
+        error,
+        images: n,
+    })
+}
+
+/// Which engine a [`lens_field_hybrid`] call used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HybridMethod {
+    /// Geometric optics + the stationary-phase next-order correction (P4.1).
+    GeometricCorrected,
+    /// The exact RC slice engine (below the threshold, or at a caustic).
+    Rc,
+}
+
+/// Result of [`lens_field_hybrid`] / [`point_mass_field_hybrid`].
+#[derive(Debug, Clone, Copy)]
+pub struct HybridOutput {
+    /// Raw integral in the same convention as [`lens_field_solve`].
+    pub value: Complex64,
+    /// Error estimate: the asymptotic estimate on the geometric branch, the
+    /// RC budget on the fallback.
+    pub error: f64,
+    pub method: HybridMethod,
+    /// Images used on the geometric branch (0 on the fallback).
+    pub images: usize,
+    /// Inner RC solves on the fallback (0 on the geometric branch).
+    pub inner_solves: usize,
+}
+
+/// 2D free-space integral of the bare quadratic phase, `2 pi i / omega` — the
+/// factor between the stationary-phase *amplification* ([`lens_field_geometric`])
+/// and the raw integral ([`lens_field_solve`]).
+fn free_space_2d(omega: f64) -> Complex64 {
+    Complex64::from_polar(
+        2.0 * std::f64::consts::PI / omega,
+        std::f64::consts::FRAC_PI_2,
+    )
+}
+
+/// High-omega hybrid (P4.1): geometric optics with the validated
+/// stationary-phase correction when its conservative error estimate is within
+/// `tol`, and the exact RC engine otherwise.  The switch is honest: the raw
+/// estimate covered the corrected residual by >= 3.5x in every measured family
+/// and the reported budget carries a further factor 3, so `tol` bounds the
+/// true error on the geometric branch (validated against the exact RC and the
+/// external ND closed form in `tests/hybrid.rs` and
+/// `comparison/hybrid_check.py`).
+///
+/// `value`/`error` are the raw integral and its budget, in the same convention
+/// as [`lens_field_solve`] (the geometric branch's amplification estimate is
+/// scaled by the free-space factor `2 pi / omega`); `tol` bounds the returned
+/// integral error, which is the same *relative* bound on the amplification.
+pub fn lens_field_hybrid(field: &LensField, omega: f64, tol: f64) -> Result<HybridOutput> {
+    let fs = free_space_2d(omega);
+    if let Some(g) = lens_field_geometric_corrected(field, omega) {
+        if g.error * fs.norm() <= tol {
+            return Ok(HybridOutput {
+                value: g.value * fs,
+                error: g.error * fs.norm(),
+                method: HybridMethod::GeometricCorrected,
+                images: g.images,
+                inner_solves: 0,
+            });
+        }
+    }
+    let out = lens_field_solve(field, &SliceConfig { omega, ..Default::default() })?;
+    Ok(HybridOutput {
+        value: out.value,
+        error: out.error,
+        method: HybridMethod::Rc,
+        images: 0,
+        inner_solves: out.inner_solves,
+    })
+}
+
+/// The `LensField` equivalent of a point-mass-only field: `lambda = 1` and
+/// `kc = |beta|^2/2` reproduce the [`crate::phases::PointMassField`] phase
+/// exactly.
+fn point_mass_equivalent(
+    source: [f64; 2],
+    lenses: &[(f64, f64, f64)],
+) -> Result<LensField> {
+    let components: Vec<Component> = lenses
+        .iter()
+        .map(|&(x, y, mass)| Component {
+            x,
+            y,
+            profile: Profile::Point { mass, xc: 0.0 },
+        })
+        .collect();
+    LensField::new(source, 0.0, 0.0, 0.0, components)
+}
+
+/// Geometric-optics amplification **with the stationary-phase correction** for
+/// a field of point masses, with the *polynomial-complete* Witt-Mao image set
+/// ([`crate::images::point_mass_field_images`]) — for a point-mass-only field
+/// the image list is guaranteed complete, so the geometric branch cannot
+/// silently miss an image (unlike the general Newton finder).  `Ok(None)` at a
+/// caustic, where the asymptotic form is invalid.
+pub fn point_mass_field_geometric_corrected(
+    source: [f64; 2],
+    lenses: &[(f64, f64, f64)],
+    omega: f64,
+) -> Result<Option<GeometricCorrected>> {
+    let field = point_mass_equivalent(source, lenses)?;
+    let images = crate::images::point_mass_field_images(source, lenses);
+    let n = images.len();
+    Ok(sp_corrected_sum(&field, &images, omega)
+        .map(|(value, error)| GeometricCorrected {
+            value,
+            error,
+            images: n,
+        }))
+}
+
+/// High-omega hybrid for a field of point masses ([`crate::images`]): the same
+/// correction as [`lens_field_hybrid`], but the images come from the
+/// *polynomial-complete* Witt-Mao solver rather than the multi-start Newton
+/// finder — for a point-mass-only field the image list is then guaranteed
+/// complete, so the geometric branch cannot silently miss an image.
+/// `lenses` is a list of `(x, y, mass)`; the phase convention matches
+/// [`crate::phases::PointMassField`] and
+/// [`crate::images::geometric_amplification`].
+pub fn point_mass_field_hybrid(
+    source: [f64; 2],
+    lenses: &[(f64, f64, f64)],
+    omega: f64,
+    tol: f64,
+) -> Result<HybridOutput> {
+    let field = point_mass_equivalent(source, lenses)?;
+    let fs = free_space_2d(omega);
+    let images = crate::images::point_mass_field_images(source, lenses);
+    if let Some((value, error)) = sp_corrected_sum(&field, &images, omega) {
+        if error * fs.norm() <= tol {
+            return Ok(HybridOutput {
+                value: value * fs,
+                error: error * fs.norm(),
+                method: HybridMethod::GeometricCorrected,
+                images: images.len(),
+                inner_solves: 0,
+            });
+        }
+    }
+    let out = lens_field_solve(&field, &SliceConfig { omega, ..Default::default() })?;
+    Ok(HybridOutput {
+        value: out.value,
+        error: out.error,
+        method: HybridMethod::Rc,
+        images: 0,
+        inner_solves: out.inner_solves,
+    })
 }
 
 #[cfg(test)]
@@ -739,6 +1218,140 @@ mod tests {
                 "rotation identity: {ours} vs {want}"
             );
             let _ = gamma;
+        }
+    }
+
+
+    /// P4.1: the analytic-Hessian chain rule must reproduce the complex-step
+    /// Hessian at real points, and the central complex steps must reproduce
+    /// the exact point-mass tensors (which `comparison/sp_correction.py`
+    /// FD-verified: `phi4_2222 = 6/x^4`, not the `4/x^4` a hand slip gave).
+    #[test]
+    fn sp_derivative_tensors_match_analytic_point_mass() {
+        let field =
+            LensField::new([0.5, 0.0], 0.0, 0.0, 0.0, vec![point(0.0, 0.0, 1.0)]).unwrap();
+        for y in [0.5f64, 2.0] {
+            let root = (y * y + 4.0).sqrt();
+            for x0 in [0.5 * (y + root), 0.5 * (y - root)] {
+                let x = [x0, 0.0];
+                // (a) analytic Hessian vs the complex-step Hessian
+                let h_cs = hess_cs(&field, x, 1e-8);
+                let h_an =
+                    hess_analytic(&field, [Complex64::from(x[0]), Complex64::from(x[1])]);
+                for a in 0..2 {
+                    for b in 0..2 {
+                        let d = (h_an[a][b] - Complex64::from(h_cs[a][b])).norm();
+                        assert!(d < 1e-8, "H[{a}][{b}] analytic vs complex step: {d:e}");
+                    }
+                }
+                // (b) exact tensors of phi = (x1-y)^2/2 + x2^2/2 - ln|x| at (x0, 0)
+                let x3 = x0.powi(3);
+                let x4 = x0.powi(4);
+                let mut p3 = [[[0.0f64; 2]; 2]; 2];
+                p3[0][0][0] = -2.0 / x3;
+                p3[0][1][1] = 2.0 / x3;
+                p3[1][0][1] = 2.0 / x3;
+                p3[1][1][0] = 2.0 / x3;
+                let got3 = phi3_cs(&field, x, 1e-5);
+                for a in 0..2 {
+                    for b in 0..2 {
+                        for c in 0..2 {
+                            let d = (got3[a][b][c] - p3[a][b][c]).abs();
+                            assert!(
+                                d < 1e-6,
+                                "phi3[{a}][{b}][{c}] at x={x0}: {d:e} (want {:e}, got {:e})",
+                                p3[a][b][c],
+                                got3[a][b][c]
+                            );
+                        }
+                    }
+                }
+                let got4 = phi4_cs(&field, x, 3e-5);
+                for a in 0..2 {
+                    for b in 0..2 {
+                        for c in 0..2 {
+                            for d in 0..2 {
+                                let want = if (a + b + c + d) % 2 == 1 {
+                                    0.0 // odd in x2: the phase is even in x2
+                                } else if (a, b, c, d) == (0, 0, 0, 0)
+                                    || (a, b, c, d) == (1, 1, 1, 1)
+                                {
+                                    6.0 / x4
+                                } else {
+                                    -6.0 / x4
+                                };
+                                let err = (got4[a][b][c][d] - want).abs();
+                                // scale-aware: the stencil's truncation grows
+                                // with the higher derivatives near the centre
+                                assert!(
+                                    err < 1e-5 * want.abs().max(1.0),
+                                    "phi4[{a}][{b}][{c}][{d}] at x={x0}: {err:e} \
+                                     (want {want:e}, got {:e})",
+                                    got4[a][b][c][d]
+                                );
+                            }
+                        }
+                    }
+                }
+                // (c) the assembled coefficient C against the prototype's
+                // analytic value (`comparison/sp_correction.py`, numpy)
+                let data = sp_image_data(&field, x).unwrap();
+                let want_c = if y == 0.5 {
+                    if x0 > 0.0 {
+                        -0.1572635723378
+                    } else {
+                        0.2945184742985
+                    }
+                } else if x0 > 0.0 {
+                    -0.004838188479867
+                } else {
+                    -0.07849514485346
+                };
+                assert!(
+                    (data.c - want_c).abs() < 1e-5,
+                    "C at x={x0}, y={y}: {} vs prototype {}",
+                    data.c,
+                    want_c
+                );
+            }
+        }
+    }
+
+    /// The 15-pairing sum must collapse to the textbook 1D count when only
+    /// `phi3[000]` is nonzero: `Sum_15 = 15 p^2 g^3`.
+    #[test]
+    fn sum15_reduces_to_the_1d_pairing_count() {
+        let mut p3 = [[[0.0f64; 2]; 2]; 2];
+        p3[0][0][0] = 2.0;
+        let hinv = [[0.5, 0.0], [0.0, 0.25]];
+        let s = sum15(&p3, &hinv);
+        assert!((s - 15.0 * 4.0 * 0.125).abs() < 1e-12, "sum15 = {s}");
+    }
+
+    /// The closed-form `psi''` must match a generic complex step of `psi'` at
+    /// real arguments, so the hand algebra is *checked*, not trusted.
+    #[test]
+    fn dpsi_dw2_closed_forms_match_the_generic_step() {
+        let profiles = [
+            Profile::Point { mass: 1.3, xc: 0.0 },
+            Profile::Point { mass: 0.7, xc: 0.25 },
+            Profile::Sis { psi0: 1.0 },
+            Profile::Cis { psi0: 1.0, xc: 0.0 },
+            Profile::Cis { psi0: 1.0, xc: 0.2 },
+            Profile::Nfw { psi0: 1.0, xs: 0.5 },
+        ];
+        for p in profiles {
+            for w in [0.2f64, 1.0, 3.7] {
+                let wc = Complex64::from(w);
+                let generic = {
+                    let h = 1e-5 * w;
+                    (p.dpsi_dw(wc + Complex64::i() * h) - p.dpsi_dw(wc - Complex64::i() * h))
+                        / (Complex64::i() * (2.0 * h))
+                };
+                let got = p.dpsi_dw2(wc);
+                let d = (got - generic).norm() / generic.norm().max(1e-12);
+                assert!(d < 1e-8, "{p:?} at w={w}: {d:e} (got {got}, generic {generic})");
+            }
         }
     }
 }
