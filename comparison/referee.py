@@ -24,7 +24,7 @@ import math
 import mpmath as mp
 import numpy as np
 from scipy.integrate import quad
-from scipy.special import airy, fresnel
+from scipy.special import airy, fresnel, jv
 
 
 def _fresnel_tail(a, omega):
@@ -101,29 +101,34 @@ _X20, _W20 = np.polynomial.legendre.leggauss(20)
 _E4 = np.exp(1j * np.pi / 4)
 
 
-def _gl20(f, a, b):
+def _gl20(f, a, b, counter=None):
     """GL20 of f on [a, b]; returns (integral, integral of |f|). A non-finite
-    node value (a node exactly on a pinched branch point) counts as 0."""
+    node value (a node exactly on a pinched branch point) counts as 0. With
+    `counter` (a one-element list) the 20 node evaluations are tallied."""
     c, h = 0.5 * (a + b), 0.5 * (b - a)
     v = f(c + h * _X20)
     v = np.where(np.isfinite(v), v, 0.0)
+    if counter is not None:
+        counter[0] += 20
     return h * np.sum(_W20 * v), abs(h) * np.sum(_W20 * np.abs(v))
 
 
-def _adapt(f, a, b, tol, minlen, floor):
+def _adapt(f, a, b, tol, minlen, floor, counter=None):
     """Adaptive GL20 on [a, b]: a panel is accepted when whole vs halves agree
     to `tol` per unit length, or to `floor` times the panel's |f| mass, or when
     it is shorter than `minlen` (its whole |f| mass is then left unaccounted —
-    the caller budgets it)."""
+    the caller budgets it). `floor` may be a callable of the panel's upper end
+    (for integrands whose phase magnitude varies strongly along [a, b])."""
     total = 0j
-    whole, _ = _gl20(f, a, b)
+    whole, _ = _gl20(f, a, b, counter)
     stack = [(a, b, whole)]
     while stack:
         lo, hi, whole = stack.pop()
         mid = 0.5 * (lo + hi)
-        (left, al), (right, ar) = _gl20(f, lo, mid), _gl20(f, mid, hi)
+        (left, al), (right, ar) = _gl20(f, lo, mid, counter), _gl20(f, mid, hi, counter)
         diff = abs(left + right - whole)
-        if diff <= tol * (hi - lo) or diff <= floor * (al + ar) or hi - lo < minlen:
+        fl = floor(hi) if callable(floor) else floor
+        if diff <= tol * (hi - lo) or diff <= fl * (al + ar) or hi - lo < minlen:
             total += left + right
         else:
             stack.append((lo, mid, left))
@@ -241,6 +246,556 @@ def slice_raw_from_nd(omega, y):
         F = (mp.exp(mp.pi * w / 4 + 1j * (w / 2) * (mp.log(w / 2) - 2 * phim))
              * mp.gamma(1 - 1j * w / 2) * mp.hyp1f1(1j * w / 2, 1, 1j * w * yv * yv / 2))
         return complex((2 * mp.pi * 1j / w) * F * mp.exp(1j * w * phim))
+
+
+# ---------------------------------------------------------------------------
+# P0 of the batched/general-lens-solver plan: referees for the general model
+# (point masses + macro model (kappa, gamma1, gamma2) + radial profiles).
+#
+# Phase convention (matches the planned Rust `LensField`):
+#     phi = 1/2 L0 x0^2 + 1/2 L2 x2^2 - b0 x0 - b1 x2 + 1/2|b|^2 - sum_j psi_j(w_j),
+#     L0 = 1 - kappa - gamma,   L2 = 1 - kappa + gamma,
+#     w_j = (x0 - a_j)^2 + (x2 - b_j)^2,
+# in the frame where the external shear is diagonal: gamma = |gamma_vec| and
+# every component centre and the source are rotated by -atan2(g2, g1)/2 (an
+# exact reduction: all components are axisymmetric and the rotation preserves
+# measure).  With L0 = L2 = 1 this is exactly the crate's PointMassField phase.
+#
+# The RC construction generalises with two changes:
+#   * the inner tails rotate by sign(L0)*alpha and the outer tails by
+#     sign(L2)*alpha, alpha in (0, pi/4] (the arbiter family);
+#   * every tail/core length scales like |L|^{-1/2}, and the Gaussian centres
+#     c0 = b0/L0, c2 = b1/L2 join the core extents.
+# Exactness invariant (checked numerically by `check_sector`; the pen-and-paper
+# argument is in the plan): along the whole contour Re w_j > 0 for every j
+# (except a node exactly on a pinch), so no w_j ever crosses the (-inf, 0] cut
+# and the principal log is the analytic continuation.  alpha <= pi/4 is what
+# makes cos(2 alpha) >= 0 and closes the argument (mixed-sign saddle images).
+#
+# Profiles psi(w) are analytic in C \ (-inf, 0] with principal branches:
+#     point(m, xc)   : (m/2) ln(w + xc^2)
+#     sis(psi0)      : psi0 sqrt(w)
+#     cis(psi0, xc)  : psi0 [s + xc ln(2 xc/(s + xc))],  s = sqrt(w + xc^2)
+#     nfw(psi0, xs)  : (psi0/2) [ (1/4) ln^2(w/(4 xs^2)) - atanh^2(sqrt(1-u^2)) ]
+#                      (= FIONA/GLoW's form on the real axis; evaluated through
+#                       the factored form below, verified in the self-test)
+# ---------------------------------------------------------------------------
+
+
+def _shear_rotation(gamma1, gamma2):
+    """(gamma, theta): shear magnitude and the rotation that diagonalises
+    ẑ½ (gamma1 (x0^2 - x2^2) + 2 gamma2 x0 x2) = ½ gamma (u0^2 - u2^2)."""
+    gamma = math.hypot(gamma1, gamma2)
+    th = 0.5 * math.atan2(gamma2, gamma1) if gamma else 0.0
+    return gamma, th
+
+
+def _rot(x, y, th):
+    """Coordinates in the frame rotated by `th` (i.e. R(-th) applied to the
+    vector: u0 = x cos th + y sin th, u1 = -x sin th + y cos th)."""
+    c, s = math.cos(th), math.sin(th)
+    return (c * x + s * y, -s * x + c * y)
+
+
+def _log1p_c(z):
+    """Complex log1p: numpy's complex `log1p` computes log(1+z) internally and
+    loses all relative accuracy for tiny |z| (1 + 1e-16 rounds to 1.11e-16),
+    which bites the NFW ln((1+s)/2) factor as u -> 0.  Use a Horner series for
+    |z| < 0.1 (relative truncation ~1e-29) and numpy elsewhere."""
+    z = np.asarray(z, dtype=complex)
+    az = np.abs(z)
+    out = np.empty_like(z)
+    small = az < 0.1
+    if np.any(small):
+        zs = z[small]
+        acc = np.full_like(zs, 1.0 / 30.0)
+        for k in range(29, 0, -1):
+            acc = acc * (-zs) + 1.0 / k
+        out[small] = zs * acc
+    big = ~small
+    if np.any(big):
+        out[big] = np.log1p(z[big])
+    return out
+
+
+def _psi_w(kind, params, w):
+    """Complex profile potential psi_j(w), vectorized over a complex array `w`.
+    Analytic in C minus the cut (-inf, 0] with principal branches (see the
+    section header). The non-finite policy for nodes exactly on a pinch lives
+    in `_gl20`, not here."""
+    w = np.asarray(w, dtype=complex)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        if kind == "point":
+            m, xc = params
+            return 0.5 * m * np.log(w + xc * xc)
+        if kind == "sis":
+            (psi0,) = params
+            return psi0 * np.sqrt(w)
+        if kind == "cis":
+            psi0, xc = params
+            if xc == 0.0:
+                return psi0 * np.sqrt(w)
+            s = np.sqrt(w + xc * xc)
+            return psi0 * (s + xc * np.log(2.0 * xc / (s + xc)))
+        if kind == "nfw":
+            psi0, xs = params
+            u2 = w / (xs * xs)
+            v = 1.0 - u2
+            out = np.empty_like(u2)
+            small = np.abs(v) < 1e-4
+            if np.any(small):
+                # atanh(sqrt(v))^2 = v (1 + v/3 + v^2/5 + ...)^2, series in v
+                # (accurate well past |v| = 1e-4).
+                vv = v[small]
+                poly = 1.0 + vv * (1.0 / 3.0 + vv * (1.0 / 5.0))
+                a2 = vv * poly * poly
+                l2 = 0.25 * np.log(u2[small] / 4.0) ** 2
+                out[small] = 0.5 * psi0 * (l2 - a2)
+            big = ~small
+            if np.any(big):
+                u2b = u2[big]
+                s = np.sqrt(1.0 - u2b)
+                # ln((1-s)/2) = ln(u^2/(2(1+s)));  ln((1+s)/2) = log1p(-u^2/(2(1+s)))
+                first = np.log(u2b / (2.0 * (1.0 + s)))
+                half = _log1p_c(-u2b / (2.0 * (1.0 + s)))
+                out[big] = 0.5 * psi0 * first * half
+            return out
+    raise ValueError(f"unknown profile kind {kind!r}")
+
+
+def make_psi_w(components):
+    """Sum psi_j(w) of *co-centred* components [(kind, params), ...] as a single
+    callable w -> psi (for the axisymmetric `hankel_referee`)."""
+    def psi_w(w):
+        w = np.asarray(w, dtype=complex)
+        acc = np.zeros_like(w)
+        for kind, params in components:
+            acc = acc + _psi_w(kind, params, w)
+        return acc
+    return psi_w
+
+
+def point_components(lenses):
+    """[(a, b, m), ...] -> the general component list [(kind, a, b, params)]."""
+    return [("point", float(a), float(b), (float(m), 0.0)) for a, b, m in lenses]
+
+
+def macro_only_integral(omega, beta, kappa=0.0, gamma1=0.0, gamma2=0.0):
+    """Raw integral of the lensless macro model, exactly:
+        I = (2 pi / (omega sqrt|L0 L2|)) e^{i (sgn L0 + sgn L2) pi/4} e^{i omega Kc},
+        Kc = 1/2|b|^2 - b0^2/(2L0) - b1^2/(2L2)
+    (b = beta in the shear-diagonal frame).  F = omega I / (2 pi i); the
+    lensless free-space case gives I = 2 pi i / omega."""
+    gamma, th = _shear_rotation(gamma1, gamma2)
+    L0 = 1.0 - kappa - gamma
+    L2 = 1.0 - kappa + gamma
+    if L0 == 0.0 or L2 == 0.0:
+        raise ValueError("critical macro model: L0 or L2 = 0")
+    b = _rot(float(beta[0]), float(beta[1]), th)
+    Kc = 0.5 * (b[0] ** 2 + b[1] ** 2) - b[0] ** 2 / (2.0 * L0) - b[1] ** 2 / (2.0 * L2)
+    return (2.0 * math.pi / (omega * math.sqrt(abs(L0 * L2)))
+            * np.exp(1j * (math.copysign(math.pi / 4, L0) + math.copysign(math.pi / 4, L2)))
+            * np.exp(1j * omega * Kc))
+
+
+def mass_sheet_nd(omega, beta, m, kappa):
+    """Raw integral for a point mass `m` at the origin under a pure convergence
+    sheet kappa (gamma = 0, lambda = 1 - kappa > 0), reduced exactly to the
+    unit-mass Nakamura-Deguchi integral by x = u/sqrt(lambda), u = sqrt(m) v:
+
+        I_kappa = lambda^{-1} m e^{i omega [Delta - (m/2) ln m]} J(m omega, y_eff),
+        Delta   = (m/2) ln lambda + 1/2 |beta|^2 (1 - 1/lambda),
+        y_eff   = |beta| / sqrt(lambda m),
+
+    with J the unit-mass raw integral (= `slice_raw_from_nd`).  F_kappa =
+    omega I/(2 pi i) = lambda^{-1} e^{i omega [Delta-(m/2) ln m]} F_ND(m omega, y_eff).
+    Validated against `hankel_referee` and the general Cartesian referee in the
+    P0 experiments (this is the external anchor for the macro model)."""
+    lam = 1.0 - float(kappa)
+    if not lam > 0.0:
+        raise ValueError("mass_sheet_nd requires 1 - kappa > 0")
+    y2 = float(beta[0]) ** 2 + float(beta[1]) ** 2
+    Delta = 0.5 * m * math.log(lam) + 0.5 * y2 * (1.0 - 1.0 / lam)
+    y_eff = math.sqrt(y2) / math.sqrt(lam * m)
+    J = slice_raw_from_nd(m * omega, y_eff)
+    return J * m * np.exp(1j * omega * (Delta - 0.5 * m * math.log(m))) / lam
+
+
+def hankel_referee(omega, y, psi_w, kappa=0.0, tol=1e-13, counter=None):
+    """Axisymmetric referee (gamma = 0; every component centred at the origin):
+
+        F = -2i omega d2 e^{i omega y^2/2} int_0^inf rho^3 J0(omega y d rho^2)
+                exp(i omega [a rho^4 - psi_w(d2 rho^4)]) d rho,
+
+    where d = e^{i sgn(lambda) pi/4}, d2 = d^2, a = lambda d2 / 2 (Im a > 0), on
+    the deformed ray r = d rho^2 -- a *polar* reduction, independent of the
+    Cartesian RC construction.  With psi_w = 0 the identity gives F = 1 for
+    every y; with the point mass it must reproduce Nakamura-Deguchi (checked in
+    the self-test).  Validated range: omega*y up to a few tens.  Returns the
+    raw integral I, like every referee here (F = omega I/(2 pi i))."""
+    lam = 1.0 - float(kappa)
+    if lam == 0.0:
+        raise ValueError("critical macro model: lambda = 0")
+    sg = 1.0 if lam > 0.0 else -1.0
+    d = np.exp(0.25j * sg * math.pi)
+    d2 = d * d
+    a = 0.5 * lam * d2
+
+    def f(rho):
+        rho = np.asarray(rho, dtype=float)
+        w = d2 * rho ** 4
+        return (rho ** 3 * jv(0, omega * y * d * rho ** 2)
+                * np.exp(1j * omega * (a * rho ** 4 - psi_w(w))))
+
+    # Tail length: decay like e^{-omega |lambda| rho^4/2} beating the J0 growth
+    # e^{omega y rho^2/sqrt(2)}; probe upward from the balance scale (the grid
+    # starts just off 0.0: profile logs diverge there but contribute nothing).
+    rho_max = max(math.sqrt(2.0 * abs(y) / abs(lam) + 2.0),
+                  (2.0 * 45.0 / (omega * abs(lam))) ** 0.25)
+    for _ in range(40):
+        grid = np.linspace(1e-12, rho_max, 257)
+        vals = np.abs(f(grid))
+        if not np.all(np.isfinite(vals)):
+            raise RuntimeError("hankel_referee: non-finite integrand on the ray")
+        if abs(f(rho_max)) <= 1e-17 * max(vals.max(), 1e-300) or rho_max > 1e4:
+            break
+        rho_max *= 1.5
+    if rho_max > 1e4:
+        raise RuntimeError("hankel_referee: tail decay probe failed")
+
+    # Local phase-roundoff floor: the phase magnitude of the exponent (quadratic
+    # + profile) *and* of the J0 argument at the panel's own position — the
+    # global-rho_max version over-accepts the high-mass panels and costs ~1e-11.
+    def floor_fn(t):
+        ps = float(np.abs(psi_w(np.asarray([d2 * t ** 4], dtype=complex)))[0])
+        return 4e-16 * (1.0 + omega * (0.5 * abs(lam) * t ** 4 + ps + abs(y) * t ** 2) + 5.0)
+
+    I_rho = _adapt(f, 0.0, rho_max, tol, 1e-12, floor_fn, counter)
+    F = -2j * omega * d2 * np.exp(1j * omega * y * y / 2.0) * I_rho
+    # Return the raw integral, as every referee here does; F = omega I/(2 pi i).
+    return F * (2j * math.pi / omega)
+
+
+def _general_ctx(components, beta, kappa, gamma1, gamma2):
+    """Shared setup: shear-diagonal frame, Gauss centres, constants."""
+    gamma, th = _shear_rotation(gamma1, gamma2)
+    L0 = 1.0 - kappa - gamma
+    L2 = 1.0 - kappa + gamma
+    if L0 == 0.0 or L2 == 0.0:
+        raise ValueError("critical macro model: L0 or L2 = 0")
+    b = _rot(float(beta[0]), float(beta[1]), th)
+    comps = []
+    for kind, a, bb, params in components:
+        a2, b2 = _rot(float(a), float(bb), th)
+        comps.append((kind, a2, b2, tuple(float(p) for p in params)))
+    c0, c2 = b[0] / L0, b[1] / L2
+    Kc = 0.5 * (b[0] ** 2 + b[1] ** 2) - b[0] ** 2 / (2.0 * L0) - b[1] ** 2 / (2.0 * L2)
+    return dict(L0=L0, L2=L2, b=b, comps=comps, c0=c0, c2=c2, Kc=Kc,
+                amin=min([c0] + [a for _, a, _, _ in comps]),
+                amax=max([c0] + [a for _, a, _, _ in comps]),
+                bmin=min([c2] + [bb for _, _, bb, _ in comps]),
+                bmax=max([c2] + [bb for _, _, bb, _ in comps]))
+
+
+def _sector_check(ctx, x2, alpha, where):
+    """Assert Re w_j > 0 at sampled nodes (the exactness invariant). Raises on
+    violation. `x2` may be complex (outer tails)."""
+    A = ctx["amin"] - 1.5 - abs(x2.imag)
+    B = ctx["amax"] + 1.5 + abs(x2.imag)
+    d1 = np.exp(1j * np.copysign(alpha, ctx["L0"]))
+    T = math.sqrt(90.0 / abs(ctx["L0"])) + 2.0
+    for t in np.linspace(A, B, 7):          # inner core
+        for kind, a, bb, params in ctx["comps"]:
+            w = (t - a) ** 2 + (x2 - bb) ** 2
+            if w.real <= 0.0:
+                raise ValueError(f"sector violated ({where}, core): Re w = {w.real:.3e}")
+    for X, sgn in [(B, 1.0), (A, -1.0)]:    # inner tails
+        for tt in np.linspace(0.0, T, 5):
+            z = X + sgn * d1 * tt
+            for kind, a, bb, params in ctx["comps"]:
+                w = (z - a) ** 2 + (x2 - bb) ** 2
+                if w.real <= 0.0:
+                    raise ValueError(f"sector violated ({where}, tail): Re w = {w.real:.3e}")
+
+
+def general_slice_referee(x2, omega, components, beta, kappa=0.0, gamma1=0.0, gamma2=0.0,
+                          margin=4.0, alpha=math.pi / 4, tol=1e-14, counter=None,
+                          subtract_free=False, check_sector=False):
+    """G(x2) = int_R exp(i omega phi) dz0 for the general model (points + macro
+    + profiles), by the RC construction in z0.  `x2` may be complex (the outer
+    rotated tails of `general_field_referee` evaluate the inner here).
+    `subtract_free` integrates e^{i omega phi_free}(e^{-i omega Psi} - 1)
+    instead (for the low-omega F - 1 regime; the caller adds back the exact
+    `macro_only_integral`).  With `check_sector`, samples the exactness
+    invariant Re w_j > 0 along the contour."""
+    if not (0.0 < alpha <= 0.25 * math.pi + 1e-15):
+        raise ValueError("alpha must be in (0, pi/4]")
+    if not omega > 0.0:
+        raise ValueError("omega must be > 0")
+    ctx = _general_ctx(components, beta, kappa, gamma1, gamma2)
+    if check_sector:
+        _sector_check(ctx, complex(x2), alpha, "inner")
+    L0, L2, c0, c2, Kc = ctx["L0"], ctx["L2"], ctx["c0"], ctx["c2"], ctx["Kc"]
+    x2 = complex(x2)
+    sh = abs(x2.imag)
+    A = ctx["amin"] - margin - sh
+    B = ctx["amax"] + margin + sh
+    pts = sorted(set([A, B] + [a for _, a, _, _ in ctx["comps"]]))
+    span0 = max(abs(A - c0), abs(B - c0))
+    dquad = (x2 - c2) ** 2
+    psib = 1.0
+    for kind, a, bb, params in ctx["comps"]:
+        wA = (A - a) ** 2 + (x2 - bb) ** 2
+        wB = (B - a) ** 2 + (x2 - bb) ** 2
+        psib = psib + float(max(np.abs(_psi_w(kind, params, np.asarray([wA])))[0],
+                                np.abs(_psi_w(kind, params, np.asarray([wB])))[0]))
+    floor = 4e-16 * (1.0 + omega * (0.5 * abs(L0) * span0 ** 2 + 0.5 * abs(L2) * abs(dquad)
+                                    + abs(Kc) + psib + 5.0))
+
+    def psi_sum_core(r, x0, sgn):
+        rr = np.asarray(r, dtype=float)
+        acc = np.zeros_like(rr, dtype=complex)
+        for kind, a, bb, params in ctx["comps"]:
+            t = (x0 - a) + sgn * rr
+            acc = acc + _psi_w(kind, params, t * t + (x2 - bb) ** 2)
+        return acc
+
+    def psi_sum_tail(t, X, sgn, d1):
+        tt = np.asarray(t, dtype=float)
+        acc = np.zeros_like(tt, dtype=complex)
+        for kind, a, bb, params in ctx["comps"]:
+            tvec = (X - a) + sgn * d1 * tt
+            acc = acc + _psi_w(kind, params, tvec * tvec + (x2 - bb) ** 2)
+        return acc
+
+    def _expm1_integrand(ps):
+        # e^{-i theta} - 1 with theta = omega*ps, stable for small theta:
+        # -2i e^{-i theta/2} sin(theta/2)  (the direct subtraction floors at
+        # eps/theta relative -- catastrophic at low omega).
+        th = omega * ps
+        return -2j * np.exp(-0.5j * th) * np.sin(0.5 * th)
+
+    total = 0j
+    for lo, hi in zip(pts[:-1], pts[1:]):
+        half = 0.5 * (hi - lo)
+        for x0, sgn in [(lo, 1.0), (hi, -1.0)]:
+            def f(r, x0=x0, sgn=sgn):
+                rr = np.asarray(r, dtype=float)
+                quad = 0.5 * L0 * (((x0 - c0) + sgn * rr) ** 2) + 0.5 * L2 * dquad + Kc
+                if subtract_free:
+                    ps = psi_sum_core(r, x0, sgn)
+                    return np.exp(1j * omega * quad) * _expm1_integrand(ps)
+                return np.exp(1j * omega * (quad - psi_sum_core(r, x0, sgn)))
+            total += _adapt(f, 0.0, half, tol, 1e-15, floor, counter)
+    d1 = np.exp(1j * np.copysign(alpha, L0))
+    T = math.sqrt(90.0 / (omega * abs(L0))) + abs(ctx["b"][0]) / (abs(L0) * math.cos(alpha)) + 2.0
+    for X, sgn in [(B, 1.0), (A, -1.0)]:
+        def f(t, X=X, sgn=sgn):
+            tt = np.asarray(t, dtype=float)
+            zc = (X - c0) + sgn * d1 * tt
+            quad = 0.5 * L0 * zc * zc + 0.5 * L2 * dquad + Kc
+            if subtract_free:
+                ps = psi_sum_tail(t, X, sgn, d1)
+                return d1 * np.exp(1j * omega * quad) * _expm1_integrand(ps)
+            return d1 * np.exp(1j * omega * (quad - psi_sum_tail(t, X, sgn, d1)))
+        total += _adapt(f, 0.0, T, tol, 1e-14, floor, counter)
+    return total
+
+
+def general_field_referee(omega, components, beta, kappa=0.0, gamma1=0.0, gamma2=0.0,
+                          margin=4.0, margin_outer=1.5, alpha=math.pi / 4, tol=1e-13,
+                          counter=None, subtract_free=False, check_sector=False):
+    """I = int_R G(x2) dx2 for the general model: the RC construction in both
+    variables (real core with anchored halves and breakpoints at every pinch
+    height b_j and Gaussian centre c2, plus sign(L2)-rotated tails on which the
+    inner runs at complex x2).  Returns the raw integral; F = omega I/(2 pi i).
+    `subtract_free` adds back the exact lensless `macro_only_integral`; with
+    kappa = gamma = 0 and point components this must reproduce `field_referee`
+    (the self-test checks <= 1e-13)."""
+    if not (0.0 < alpha <= 0.25 * math.pi + 1e-15):
+        raise ValueError("alpha must be in (0, pi/4]")
+    if not omega > 0.0:
+        raise ValueError("omega must be > 0")
+    ctx = _general_ctx(components, beta, kappa, gamma1, gamma2)
+    if check_sector:
+        # Sample the inner contour at several outer positions, including the
+        # outer tails (where x2 is complex) -- that is where the mixed-sign
+        # saddle case could in principle cross a cut.
+        L0, L2 = ctx["L0"], ctx["L2"]
+        c2 = ctx["c2"]
+        A2 = ctx["bmin"] - margin_outer
+        B2 = ctx["bmax"] + margin_outer
+        S = math.sqrt(90.0 / (omega * abs(L2))) + 2.0
+        d2 = np.exp(1j * np.copysign(alpha, L2))
+        for x2 in [complex(A2), complex(B2), complex(c2),
+                   complex(B2 + d2 * 0.5), complex(B2 + d2 * 2.0),
+                   complex(A2 - d2 * 0.5), complex(A2 - d2 * 2.0)]:
+            _sector_check(ctx, x2, alpha, "outer")
+    L0, L2, c2, Kc = ctx["L0"], ctx["L2"], ctx["c2"], ctx["Kc"]
+    A2 = ctx["bmin"] - margin_outer
+    B2 = ctx["bmax"] + margin_outer
+    pts = sorted(set([A2, B2] + [bb for _, _, bb, _ in ctx["comps"]]))
+    span2 = max(abs(A2 - c2), abs(B2 - c2))
+    S = math.sqrt(90.0 / (omega * abs(L2))) + abs(ctx["b"][1]) / (abs(L2) * math.cos(alpha)) + 2.0
+    span0_max = max(abs(ctx["amin"] - 1.5 - S * math.sin(alpha) - ctx["c0"]),
+                    abs(ctx["amax"] + 1.5 + S * math.sin(alpha) - ctx["c0"]), 1.0)
+    floor = 4e-16 * (1.0 + omega * (0.5 * abs(L0) * span0_max ** 2 + 0.5 * abs(L2) * span2 ** 2
+                                    + abs(Kc) + 10.0))
+
+    def G(x2):
+        return general_slice_referee(x2, omega, components, beta, kappa, gamma1, gamma2,
+                                     margin=margin, alpha=alpha, tol=tol,
+                                     counter=counter, subtract_free=subtract_free)
+
+    total = 0j
+    if subtract_free:
+        total += macro_only_integral(omega, beta, kappa, gamma1, gamma2)
+    for lo, hi in zip(pts[:-1], pts[1:]):
+        rmax = math.sqrt(0.5 * (hi - lo))
+        for x0, sgn in [(lo, 1.0), (hi, -1.0)]:
+            def f(rho, x0=x0, sgn=sgn):
+                q = np.asarray(rho, dtype=float)
+                return np.array([G(x0 + sgn * qq * qq) * 2.0 * qq for qq in q])
+            total += _adapt(f, 0.0, rmax, tol, 1e-12, floor)
+    d2 = np.exp(1j * np.copysign(alpha, L2))
+    for X, sgn in [(B2, 1.0), (A2, -1.0)]:
+        def f(s, X=X, sgn=sgn):
+            q = np.asarray(s, dtype=float)
+            return np.array([d2 * G(X + sgn * d2 * qq) for qq in q])
+        total += _adapt(f, 0.0, S, tol, 1e-12, floor)
+    return total
+
+
+def make_psi_w_mp(components):
+    """mpmath version of `make_psi_w` (dps whatever is active; robust forms:
+    the NFW branch uses ln((1-s)/2) ln((1+s)/2) with log1p, never the
+    cancelling (1/4)ln^2 - atanh^2 difference, and never mp.atanh near 1)."""
+    def psi_w(w):
+        w = mp.mpc(w)
+        acc = mp.mpc(0)
+        for kind, params in components:
+            if kind == "point":
+                m, xc = params
+                acc += mp.mpf(m) / 2 * mp.log(w + xc * xc)
+            elif kind == "sis":
+                acc += mp.mpf(params[0]) * mp.sqrt(w)
+            elif kind == "cis":
+                psi0, xc = params
+                if xc == 0.0:
+                    acc += mp.mpf(psi0) * mp.sqrt(w)
+                else:
+                    s = mp.sqrt(w + xc * xc)
+                    acc += mp.mpf(psi0) * (s + xc * mp.log(2 * xc / (s + xc)))
+            elif kind == "nfw":
+                psi0, xs = params
+                u2 = w / (xs * xs)
+                s = mp.sqrt(1 - u2)
+                first = mp.log(u2 / (2 * (1 + s)))
+                half = mp.log1p(-u2 / (2 * (1 + s)))
+                acc += mp.mpf(psi0) / 2 * first * half
+            else:
+                raise ValueError(f"unknown profile kind {kind!r}")
+        return acc
+    return psi_w
+
+
+_GL_RULE_MP_CACHE = {}
+
+
+def _gl_rule_mp(n=20):
+    """GL(n) nodes/weights at the *current* mp.dps (numpy's double-precision
+    rule caps any mp quadrature at ~1e-16 relative — the reason the first hp
+    attempt hung refining forever: its whole-vs-halves differences could never
+    fall below 1e-28).  Newton on P_n with an mp recurrence; cached per dps."""
+    dps = mp.mp.dps
+    key = (n, dps)
+    if key in _GL_RULE_MP_CACHE:
+        return _GL_RULE_MP_CACHE[key]
+    nodes, weights = [], []
+    for i in range(1, n + 1):
+        x = mp.cos(mp.pi * (mp.mpf(i) - mp.mpf("0.25")) / (n + mp.mpf("0.5")))
+        for _ in range(200):
+            p_prev, p_cur = mp.mpf(1), x
+            for k in range(2, n + 1):
+                p_prev, p_cur = p_cur, ((2 * k - 1) * x * p_cur - (k - 1) * p_prev) / k
+            dp = n * (x * p_cur - p_prev) / (x * x - 1)
+            dx = p_cur / dp
+            x = x - dx
+            if abs(dx) <= mp.mpf(10) ** (-(dps + 5)):
+                break
+        p_prev, p_cur = mp.mpf(1), x
+        for k in range(2, n + 1):
+            p_prev, p_cur = p_cur, ((2 * k - 1) * x * p_cur - (k - 1) * p_prev) / k
+        dp = n * (x * p_cur - p_prev) / (x * x - 1)
+        nodes.append(x)
+        weights.append(2 / ((1 - x * x) * dp * dp))
+    _GL_RULE_MP_CACHE[key] = (nodes, weights)
+    return nodes, weights
+
+
+def _gl20_mp(f, a, b):
+    """GL20 of an mp-scalar -> mp-complex function on [a, b], with the
+    mp-precision rule (no |f| mass returned)."""
+    nodes, weights = _gl_rule_mp()
+    c, h = (a + b) / 2, (b - a) / 2
+    s = mp.mpc(0)
+    for x, w in zip(nodes, weights):
+        s += w * f(c + h * x)
+    return h * s
+
+
+def _adapt_mp(f, a, b, tol, minlen, max_depth=80):
+    """Adaptive GL20 in mp arithmetic: accept when whole vs halves agree to
+    `tol` in absolute value or the panel is shorter than `minlen`."""
+    whole = _gl20_mp(f, a, b)
+    value = mp.mpc(0)
+    stack = [(a, b, whole, 0)]
+    while stack:
+        lo, hi, whole, depth = stack.pop()
+        mid = (lo + hi) / 2
+        left, right = _gl20_mp(f, lo, mid), _gl20_mp(f, mid, hi)
+        if abs(left + right - whole) <= tol * (hi - lo) or hi - lo < minlen or depth > max_depth:
+            value += left + right
+        else:
+            stack.append((lo, mid, left, depth + 1))
+            stack.append((mid, hi, right, depth + 1))
+    return value
+
+
+def hankel_referee_hp(omega, y, psi_w_mp, kappa=0.0, tol_rel=1e-28, dps=45):
+    """High-precision `hankel_referee` (same polar construction, mpmath
+    arithmetic): the authoritative referee for profiles / large omega*y, where
+    the float version's ~eps*(mass/|I|) accumulation reaches 1e-8.  `psi_w_mp`
+    from `make_psi_w_mp`.  Returns the raw integral I (F = omega I/(2 pi i));
+    the float `hankel_referee` and this one share only the *method*, so
+    agreement between them (within the float one's floor) checks the mp code,
+    while the point-mass ND / macro-only closed forms are the external anchors."""
+    with mp.workdps(dps):
+        w, yv, lam = mp.mpf(omega), mp.mpf(y), 1 - mp.mpf(kappa)
+        if lam == 0:
+            raise ValueError("critical macro model: lambda = 0")
+        sg = 1 if lam > 0 else -1
+        d = mp.e ** (mp.mpc(0, 1) * sg * mp.pi / 4)
+        d2 = d * d
+        a = lam * d2 / 2
+        rho_max = mp.sqrt(2 * abs(yv) / abs(lam) + 2)
+        rho_max = max(rho_max, (mp.mpf(90) / (mp.mpf(omega) * abs(lam))) ** mp.mpf("0.25"))
+
+        def f(rho):
+            wq = d2 * rho ** 4
+            return (rho ** 3 * mp.besselj(0, mp.mpf(omega) * yv * d * rho ** 2)
+                    * mp.e ** (mp.mpc(0, 1) * mp.mpf(omega) * (a * rho ** 4 - psi_w_mp(wq))))
+
+        # decay probe (mp is slow, so probe coarsely)
+        for _ in range(12):
+            if abs(f(rho_max)) <= mp.mpf("1e-30") * max(abs(f(rho_max / 2)), mp.mpf("1e-300")):
+                break
+            rho_max *= mp.mpf("1.5")
+        if rho_max > 1e5:
+            raise RuntimeError("hankel_referee_hp: tail decay probe failed")
+        I_rho = _adapt_mp(f, mp.mpf(0), rho_max, tol_rel, mp.mpf("1e-16"))
+        F = -2j * mp.mpf(omega) * d2 * mp.e ** (mp.mpc(0, 1) * mp.mpf(omega) * yv * yv / 2) * I_rho
+        return complex(F * (2j * mp.pi / mp.mpf(omega)))
 
 
 if __name__ == "__main__":

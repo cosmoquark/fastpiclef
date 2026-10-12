@@ -1,0 +1,8 @@
+case,n_omega,max_rel_err,nodes,nodes_per_omega,wall_s,note
+single-mass-batch,24,5.87904372025694018e-15,420122,17505.08,56.231,vs ND
+two-mass-batch-referee,24,2.32607897282131321e-15,626360,26098.33,,vs per-omega referee
+chebyshev,6,6.66745805583703000e-01,,,,"single mass, ND test points"
+chebyshev,8,3.83979656489916332e-01,,,,"single mass, ND test points"
+chebyshev,10,1.85265256200506406e-01,,,,"single mass, ND test points"
+chebyshev,12,7.04015216700473317e-02,,,,"single mass, ND test points"
+chebyshev,16,6.12243421514064093e-03,,,,"single mass, ND test points"
