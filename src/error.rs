@@ -8,8 +8,6 @@ pub enum Error {
     DimensionMismatch { phase: usize, requested: usize },
     #[error("descent flow diverged")]
     FlowDiverged,
-    #[error("pole encountered on contour")]
-    PoleEncountered,
     /// A constant-phase trace failed to make progress — a Stokes-line
     /// configuration or a pole astride the contour. Signals the
     /// thimble→mesh fallback (see [`crate::thimble::solve_1d_hybrid`]).
