@@ -228,6 +228,20 @@ def test_lens_field_geometric_macro_only():
     assert abs(abs(g.amplification) - 1.0 / math.sqrt(abs(l0 * l2))) < 1e-5
 
 
+def test_point_mass_nd_closed_form():
+    # P4.4: the isolated point mass via the Nakamura-Deguchi closed form
+    # (mpmath dps 40 references): microseconds and exact at low |z|.
+    r = fpl.point_mass_nd(omega=1.0, y=1.0)
+    want = 1.37744791808669720 + 0.20921170471940767j
+    assert abs(r.amplification - want) / abs(want) < 1e-12, r
+    assert r.error >= abs(r.amplification - want)
+    # the polar (1D thimble) path agrees in magnitude; the ND form carries the
+    # standard Fermat-offset phase, so complex values are not comparable.
+    p = fpl.PointMass(0.5).solve(omega=10.0)
+    nd = fpl.point_mass_nd(omega=10.0, y=0.5)
+    assert abs(abs(nd.amplification) - abs(p.amplification)) < 1e-9
+
+
 def test_hybrid_point_mass_switch_and_budget():
     # P4.1: a tight tol stays on the exact RC engine; a loose tol takes the
     # corrected geometric branch, which must beat the bare geometric sum

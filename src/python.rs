@@ -1002,6 +1002,27 @@ fn slice_inner_rc(
     Ok(make_output(1, omega, o.value, o.error, "slice-inner", 0))
 }
 
+/// Nakamura–Deguchi closed form for the **isolated unit point mass** at the
+/// origin with source `(y, 0)` (P4.4): the µs-class exact evaluator, useful for
+/// parameter estimation on single lenses.  It is the series evaluation of
+/// `1F1(i w/2, 1; i w y^2/2)` in log space (see `src/nd.rs`), validated to
+/// ~1e-13…1e-12 for `|z| = omega y^2 / 2 <~ 6` and degrading like
+/// `eps * e^{|z|}` beyond (~4e-7 at `|z| = 20`); the `.error` field is a
+/// conservative estimate (measured coverage >= 2x).  For larger `|z|` use
+/// `PointMass(y).solve(...)` (the polar 1D path, fast for omega >~ 10) or
+/// `LensField.hybrid`.  The phase convention is the standard Fermat-offset one
+/// (compare `|F|`, not the complex value, with this package's solvers).
+#[pyfunction]
+#[pyo3(signature = (omega, y))]
+fn point_mass_nd(omega: f64, y: f64) -> PyResult<PyOutput> {
+    if !(omega > 0.0) {
+        return Err(PyValueError::new_err("omega must be > 0"));
+    }
+    let (f, err) = crate::nd::point_mass_nd(omega, y);
+    let fs = free_space(2, omega);
+    Ok(make_output(2, omega, f * fs, err * fs.norm(), "nd", 0))
+}
+
 /// General lens field: stars/halos (axisymmetric profiles) plus the external
 /// macro model (`kappa`, `gamma1`, `gamma2`).  `solve`/`sweep`/`map` run the
 /// same exact RC engine (P2a); `images`/`geometric` give the real-space
@@ -1234,5 +1255,6 @@ fn fastpiclef(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCisComp>()?;
     m.add_class::<PyNfwComp>()?;
     m.add_function(wrap_pyfunction!(slice_inner_rc, m)?)?;
+    m.add_function(wrap_pyfunction!(point_mass_nd, m)?)?;
     Ok(())
 }

@@ -16,6 +16,7 @@ pub mod error;
 pub mod flow;
 pub mod images;
 pub mod lens_field;
+pub mod nd;
 pub mod mesh;
 pub mod phase;
 pub mod phases;
@@ -42,6 +43,7 @@ pub use lens_field::{
     point_mass_field_hybrid,
 };
 pub use mesh::Mesh;
+pub use nd::point_mass_nd;
 pub use phase::{DynPhase, Phase, PhaseAsDyn, RationalPhase, RationalPhase2D, as_dyn};
 pub use polar::{PolarConfig, PolarSolver, solve_point_mass_polar};
 pub use quadrature::{GrundmannMoeller, Quadrature};
