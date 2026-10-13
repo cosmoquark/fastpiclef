@@ -33,7 +33,7 @@
 //! through a mass — the outer integrator (milestone A1) treats those $c = b_j$
 //! crossings as panel breakpoints.
 
-use crate::adaptive::{AdaptiveConfig, integrate};
+use crate::adaptive::{AdaptiveConfig, AdaptiveResult, integrate};
 use crate::phase::{Phase, RationalPhase};
 use crate::phases::PointMassField;
 use crate::roots::{poly_add, poly_mul, poly_scale};
@@ -41,6 +41,7 @@ use crate::thimble::{ThimbleConfig, ThimbleSolver};
 use crate::{Error, Output, Result};
 use nalgebra::SVector;
 use num_complex::Complex64;
+use rayon::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn poly_sub(a: &[Complex64], b: &[Complex64]) -> Vec<Complex64> {
@@ -740,35 +741,54 @@ pub(crate) fn slice_field_g<M: SliceModel>(field: &M, cfg: &SliceConfig) -> Resu
     };
     let solves = AtomicUsize::new(0);
 
-    let mut value = Complex64::new(0.0, 0.0);
-    let mut error = 0.0;
-
     // Outer core: anchored halves x2 = x0 + sgn*rho^2. Both halves map to
     // drho in [0, rmax] with a + Jacobian 2*rho after orientation (the
     // right-anchored half traverses [mid, hi] backwards in rho).
+    //
+    // Every (window, half) is an *independent* adaptive integral, so
+    // `cfg.parallel` schedules all 2(N+1) of them as rayon tasks: for many
+    // masses that is the dominant parallelism (the per-integral node
+    // parallelism alone leaves the cores idle between the short sequential
+    // integrals).  The tasks are collected in loop order and accumulated in
+    // that same order, and each integral keeps its serial arithmetic, so the
+    // result is bitwise identical to the serial evaluation.
+    let mut core_tasks: Vec<(f64, f64, f64)> = Vec::with_capacity(2 * pts.len());
     for win in pts.windows(2) {
         let (lo, hi) = (win[0], win[1]);
         let rmax = (0.5 * (hi - lo)).sqrt();
-        for (x0, sgn) in [(lo, 1.0), (hi, -1.0)] {
-            let f = |rho: f64| -> (Complex64, f64) {
-                solves.fetch_add(1, Ordering::Relaxed);
-                let off = Complex64::new(sgn * rho * rho, 0.0);
-                let (o, _) = inner_rc_unchecked(&eff_field, x0, off, cfg);
-                let jac = 2.0 * rho;
-                (o.value * jac, o.error * jac)
-            };
-            let res = integrate(&f, 0.0, rmax, &outer_cfg, cfg.parallel);
-            value += res.value;
-            error += res.error;
-        }
+        core_tasks.push((lo, 1.0, rmax));
+        core_tasks.push((hi, -1.0, rmax));
+    }
+    let run_core = |&(x0, sgn, rmax): &(f64, f64, f64)| -> AdaptiveResult {
+        let f = |rho: f64| -> (Complex64, f64) {
+            solves.fetch_add(1, Ordering::Relaxed);
+            let off = Complex64::new(sgn * rho * rho, 0.0);
+            let (o, _) = inner_rc_unchecked(&eff_field, x0, off, cfg);
+            let jac = 2.0 * rho;
+            (o.value * jac, o.error * jac)
+        };
+        integrate(&f, 0.0, rmax, &outer_cfg, cfg.parallel)
+    };
+    let core: Vec<AdaptiveResult> = if cfg.parallel {
+        core_tasks.par_iter().map(run_core).collect()
+    } else {
+        core_tasks.iter().map(run_core).collect()
+    };
+
+    let mut value = Complex64::new(0.0, 0.0);
+    let mut error = 0.0;
+    for res in core {
+        value += res.value;
+        error += res.error;
     }
 
     // Outer tails: x2 = end + sgn*e4*s. Same sign bookkeeping as the inner
     // tails (Jacobian and orientation flips cancel), so both contribute
-    // + e4 * G.
+    // + e4 * G.  The two tails are independent tasks with the same
+    // order-preserving accumulation as the core.
     let (tail_sign, l_abs, b_abs) = field.outer_tail();
     let e4 = Complex64::from_polar(1.0, tail_sign * cfg.tail_angle);
-    for (end_x2, sgn) in [(b2, 1.0), (a2, -1.0)] {
+    let run_tail = |&(end_x2, sgn): &(f64, f64)| -> (Complex64, f64) {
         let f = |s: f64| -> (Complex64, f64) {
             solves.fetch_add(1, Ordering::Relaxed);
             let off = e4 * Complex64::from(sgn * s);
@@ -791,10 +811,19 @@ pub(crate) fn slice_field_g<M: SliceModel>(field: &M, cfg: &SliceConfig) -> Resu
             s_end *= 2.0;
         }
         let res = integrate(&f, 0.0, s_end, &outer_cfg, cfg.parallel);
-        value += res.value;
-        error += res.error;
         let end = f(s_end).0.norm();
-        error += if decayed { 4.0 * end } else { s_end * end };
+        let extra = if decayed { 4.0 * end } else { s_end * end };
+        (res.value, res.error + extra)
+    };
+    let tail_tasks = [(b2, 1.0), (a2, -1.0)];
+    let tails: Vec<(Complex64, f64)> = if cfg.parallel {
+        tail_tasks.par_iter().map(run_tail).collect()
+    } else {
+        tail_tasks.iter().map(run_tail).collect()
+    };
+    for (v, e) in tails {
+        value += v;
+        error += e;
     }
 
     Ok(SliceFieldOutput {
