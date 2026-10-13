@@ -80,10 +80,10 @@ test-py = { cmd = "python tests/python/test_wrapper.py", depends-on = ["build"] 
 # so `pixi run lab` / `pixi run notebook-*` auto-select the right environment.
 [tool.pixi.feature.notebook.tasks]
 lab = { cmd = "jupyter lab", depends-on = ["build"] }
-notebook-getting-started = { cmd = "jupyter nbconvert --execute --to notebook --inplace notebooks/getting_started.ipynb", depends-on = [
+notebook-getting-started = { cmd = "jupyter nbconvert --execute --to notebook --inplace --ExecutePreprocessor.timeout=900 notebooks/getting_started.ipynb", depends-on = [
     "build",
 ] }
-notebook-comparison = { cmd = "jupyter nbconvert --execute --to notebook --inplace notebooks/comparison.ipynb", depends-on = [
+notebook-comparison = { cmd = "jupyter nbconvert --execute --to notebook --inplace --ExecutePreprocessor.timeout=3600 notebooks/comparison.ipynb", depends-on = [
     "build",
 ] }
 
