@@ -102,4 +102,5 @@ hybrid-check = { cmd = "python -m comparison.hybrid_check", depends-on = ["build
 wolensing = { cmd = "python -m comparison.wolensing_compare", depends-on = ["build"] }
 many-masses = { cmd = "cargo run --release --example many_masses --", depends-on = ["build"] }
 many-masses-fold = { cmd = "python -m comparison.many_masses_fold", depends-on = ["build"] }
+logistic-bridge = { cmd = "python -m comparison.logistic_bridge", depends-on = ["build"] }
 profiles-fiona = { cmd = "python comparison/profiles_fiona_check.py", depends-on = ["build"] }

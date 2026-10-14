@@ -848,6 +848,10 @@ def report():
     for r in rows:
         groups[(r["case"], r["omega"])].append(r)
 
+    def truth_ok(r):
+        """A row is only usable if the exact-RC reference itself converged."""
+        return float(r["truth_err"]) <= 1e-6
+
     # gate summary: best error per (case, omega), its K, and the coverage
     lines.append("## summary (gate view)")
     lines.append("")
@@ -855,8 +859,22 @@ def report():
                  "max wR |")
     lines.append("|------|-------|----------|---------|---|---------------|-----------|"
                  "--------|")
+    excluded = []
+    degenerate = False
     for (case, omega) in sorted(groups, key=lambda k: (k[0], float(k[1]))):
         rs = sorted(groups[(case, omega)], key=lambda r: int(r["K"]))
+        if not truth_ok(rs[0]):
+            excluded.append(rs[0])
+            continue
+        # K = N (R_cut >= R_field) means no star is folded: the folded model
+        # reduces to the original one (the K = N bitwise check, error
+        # identically zero).  Those rows are not a measurement of the folding.
+        kept = [r for r in rs if int(r["K"]) < int(r["N"])]
+        if len(kept) < len(rs):
+            degenerate = True
+        rs = kept
+        if not rs:
+            continue
         best = None
         for r in rs:
             for v in ("err_micro", "err_first", "err_plain"):
@@ -869,6 +887,23 @@ def report():
                      f"{float(best[2]['cover_best']):.1f}x | {min_cover:.1f}x | "
                      f"{max_wr:.2e} |")
     lines.append("")
+    if degenerate:
+        lines.append("Note: rows with K = N (every star inside R_cut — the folded model "
+                     "reduces to the original; the K = N bitwise check, error identically "
+                     "zero) are excluded from this summary and shown in the per-case "
+                     "tables.")
+        lines.append("")
+    if excluded:
+        lines.append("Excluded from the summary (the exact-RC reference itself did not "
+                     "converge; the rows are kept in the per-case tables below for the "
+                     "record, but their err/cover columns are not meaningful):")
+        lines.append("")
+        for r0 in excluded:
+            lines.append(f"- {r0['case']}, omega = {r0['omega']}: truth error estimate "
+                         f"{float(r0['truth_err']):.1e} after "
+                         f"{float(r0['truth_steps']):.0f} steps "
+                         f"({float(r0['truth_wall']):.0f} s).")
+        lines.append("")
     for (case, omega) in sorted(groups, key=lambda k: (k[0], float(k[1]))):
         rs = sorted(groups[(case, omega)], key=lambda r: int(r["K"]))
         r0 = rs[0]
@@ -878,6 +913,15 @@ def report():
                      + (f", spectrum = {r0['spectrum']}" if r0["spectrum"] != "equal" else "")
                      + ")")
         lines.append("")
+        if not truth_ok(r0):
+            lines.append(f"**Warning: the exact-RC truth for this case did not converge** "
+                         f"(error estimate {float(r0['truth_err']):.1e}, "
+                         f"{float(r0['truth_steps']):.0f} steps, "
+                         f"{float(r0['truth_wall']):.0f} s).  The err/cover columns below "
+                         f"are **not usable**; the rows are kept for the record (budget, "
+                         f"indicator and walls remain meaningful).  Excluded from the "
+                         f"summary above.")
+            lines.append("")
         lines.append("| K | R_cut | err plain | err micro | err first | budget | cover "
                      "| E_shift | E_micro | E_missing | max wR | indicator | n_micro "
                      "| flags | fold wall [s] |")

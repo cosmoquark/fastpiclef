@@ -6,14 +6,21 @@ Prototype: `comparison/many_masses_fold.py` (plan: `~/.opencode/plan/p42-far-fie
 
 | case | omega | best err | variant | K | cover at best | min cover | max wR |
 |------|-------|----------|---------|---|---------------|-----------|--------|
-| min5_a | 2.99999999999999989e-01 | 5.20e-05 | err_micro | 30 | 0.0x | 0.0x | 1.20e+02 |
-| min5_a | 1.00000000000000000e+00 | 2.01e-04 | err_micro | 30 | 0.0x | 0.0x | 4.00e+02 |
-| min5_a | 3.00000000000000000e+00 | 0.00e+00 | err_micro | 30 | 0.0x | 0.0x | 1.20e+03 |
+| min5_a | 2.99999999999999989e-01 | 2.61e-01 | err_plain | 28 | 47.2x | 47.2x | 1.20e+02 |
+| min5_a | 1.00000000000000000e+00 | 6.42e-01 | err_micro | 28 | 98.9x | 98.9x | 4.00e+02 |
+| min5_a | 3.00000000000000000e+00 | 2.59e-01 | err_micro | 10 | 2860.1x | 128.2x | 1.20e+03 |
 | min5_dil | 1.00000000000000000e+00 | 1.27e-02 | err_micro | 4 | 1412.4x | 25.5x | 5.71e-01 |
 | min5_dil | 3.00000000000000000e+00 | 9.26e-03 | err_micro | 0 | 114.8x | 29.0x | 1.71e+00 |
-| sad5_a | 1.00000000000000000e+00 | 0.00e+00 | err_micro | 30 | 0.0x | 0.0x | 3.13e+00 |
-| sad5_a | 3.00000000000000000e+00 | 0.00e+00 | err_micro | 30 | 0.0x | 0.0x | 9.40e+00 |
+| min5_n100d | 3.00000000000000000e+00 | 2.36e-02 | err_micro | 0 | 37.6x | 37.6x | 1.33e+00 |
+| sad5_a | 1.00000000000000000e+00 | 3.61e-01 | err_plain | 28 | 8.8x | 8.5x | 3.13e+00 |
+| sad5_a | 3.00000000000000000e+00 | 1.56e-01 | err_plain | 10 | 120.5x | 16.9x | 9.40e+00 |
 | sad5_dil | 3.00000000000000000e+00 | 2.20e-02 | err_micro | 9 | 210.4x | 1.2x | 1.52e+00 |
+
+Note: rows with K = N (every star inside R_cut — the folded model reduces to the original; the K = N bitwise check, error identically zero) are excluded from this summary and shown in the per-case tables.
+
+Excluded from the summary (the exact-RC reference itself did not converge; the rows are kept in the per-case tables below for the record, but their err/cover columns are not meaningful):
+
+- min5_b, omega = 3.00000000000000000e+00: truth error estimate 7.4e+00 after 6744366 steps (23782 s).
 
 ## min5_a, omega = 2.99999999999999989e-01 (N = 30, macro min, kappa = 0.550, gamma1 = 0.050, kappa_star = 0.3183)
 
@@ -48,6 +55,17 @@ Prototype: `comparison/many_masses_fold.py` (plan: `~/.opencode/plan/p42-far-fie
 | 30 | 8.00 | 0.00e+00 | 0.00e+00 | 0.00e+00 | 0.00e+00 | 0.0x | 0.00e+00 | 0.00e+00 | 0.00e+00 | 0.00e+00 | 6.0e-01 | 0 | 0 | 148.2 |
 | 30 | 12.00 | 0.00e+00 | 0.00e+00 | 0.00e+00 | 0.00e+00 | 0.0x | 0.00e+00 | 0.00e+00 | 0.00e+00 | 0.00e+00 | 0.0e+00 | 0 | 0 | 146.0 |
 
+## min5_b, omega = 3.00000000000000000e+00 (N = 30, macro min, kappa = 0.550, gamma1 = 0.050, kappa_star = 0.3183, spectrum = power)
+
+**Warning: the exact-RC truth for this case did not converge** (error estimate 7.4e+00, 6744366 steps, 23782 s).  The err/cover columns below are **not usable**; the rows are kept for the record (budget, indicator and walls remain meaningful).  Excluded from the summary above.
+
+| K | R_cut | err plain | err micro | err first | budget | cover | E_shift | E_micro | E_missing | max wR | indicator | n_micro | flags | fold wall [s] |
+|---|-------|-----------|-----------|-----------|--------|-------|---------|---------|-----------|--------|-----------|---------|-------|----------------|
+| 0 | 1.00 | 9.21e-01 | 3.43e-01 | 3.43e-01 | 1.23e+01 | 35.7x | 1.06e+00 | 1.31e+00 | 1.71e+00 | 3.07e+00 | nan | 31 | 12 | 0.1 |
+| 6 | 2.00 | 8.81e-01 | 4.70e-01 | 4.70e-01 | 4.29e+01 | 91.3x | 1.32e+01 | 4.43e-01 | 6.74e-01 | 9.80e+00 | 3.6e-01 | 25 | 10 | 4.2 |
+| 11 | 3.00 | 1.35e+00 | 5.35e-01 | 5.35e-01 | 3.01e+01 | 56.3x | 8.94e+00 | 4.32e-01 | 6.74e-01 | 2.75e+00 | 4.9e-01 | 20 | 10 | 12.6 |
+| 27 | 5.00 | 1.50e+00 | 1.10e+00 | 1.10e+00 | 1.26e+02 | 113.8x | 4.16e+01 | 2.54e-01 | 0.00e+00 | 7.55e+00 | 6.5e-01 | 5 | 3 | 10111.1 |
+
 ## min5_dil, omega = 1.00000000000000000e+00 (N = 30, macro min, kappa = 0.550, gamma1 = 0.050, kappa_star = 0.0424)
 
 | K | R_cut | err plain | err micro | err first | budget | cover | E_shift | E_micro | E_missing | max wR | indicator | n_micro | flags | fold wall [s] |
@@ -69,6 +87,16 @@ Prototype: `comparison/many_masses_fold.py` (plan: `~/.opencode/plan/p42-far-fie
 | 4 | 5.00 | 1.60e-01 | 1.97e-01 | 1.97e-01 | 4.80e+01 | 243.7x | 1.57e+01 | 2.49e-01 | 0.00e+00 | 1.48e+00 | 2.0e-01 | 26 | 15 | 3.3 |
 | 9 | 8.00 | 6.93e-02 | 8.17e-02 | 5.20e-01 | 1.14e+01 | 139.4x | 3.63e+00 | 1.67e-01 | 0.00e+00 | 5.56e-01 | 6.5e-01 | 21 | 10 | 16.2 |
 | 23 | 12.00 | 3.30e-01 | 3.44e-01 | 3.44e-01 | 9.99e+00 | 29.0x | 3.29e+00 | 3.92e-02 | 0.00e+00 | 1.71e+00 | 3.2e-01 | 7 | 0 | 112.4 |
+
+## min5_n100d, omega = 3.00000000000000000e+00 (N = 100, macro min, kappa = 0.550, gamma1 = 0.050, kappa_star = 0.0354)
+
+| K | R_cut | err plain | err micro | err first | budget | cover | E_shift | E_micro | E_missing | max wR | indicator | n_micro | flags | fold wall [s] |
+|---|-------|-----------|-----------|-----------|--------|-------|---------|---------|-----------|--------|-----------|---------|-------|----------------|
+| 0 | 1.00 | 9.59e-02 | 2.36e-02 | 2.37e-02 | 8.89e-01 | 37.6x | 2.49e-04 | 2.96e-01 | 0.00e+00 | 1.11e-04 | nan | 100 | 7 | 0.0 |
+| 0 | 2.00 | 9.59e-02 | 2.36e-02 | 2.37e-02 | 8.89e-01 | 37.6x | 2.49e-04 | 2.96e-01 | 0.00e+00 | 1.11e-04 | 0.0e+00 | 100 | 7 | 0.0 |
+| 0 | 3.00 | 9.59e-02 | 2.36e-02 | 2.37e-02 | 8.89e-01 | 37.6x | 2.49e-04 | 2.96e-01 | 0.00e+00 | 1.11e-04 | 0.0e+00 | 100 | 7 | 0.0 |
+| 0 | 5.00 | 9.59e-02 | 2.36e-02 | 2.37e-02 | 8.89e-01 | 37.6x | 2.49e-04 | 2.96e-01 | 0.00e+00 | 1.11e-04 | 0.0e+00 | 100 | 7 | 0.0 |
+| 3 | 8.00 | 7.89e-02 | 1.82e-01 | 1.82e-01 | 4.39e+01 | 241.9x | 1.44e+01 | 2.65e-01 | 0.00e+00 | 1.33e+00 | 1.7e-01 | 97 | 4 | 2.9 |
 
 ## sad5_a, omega = 1.00000000000000000e+00 (N = 30, macro sad, kappa = 0.950, gamma1 = 0.450, kappa_star = 0.3183)
 
