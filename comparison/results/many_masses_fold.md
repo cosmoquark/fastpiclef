@@ -22,6 +22,7 @@ Note: rows with K = N (every star inside R_cut — the folded model reduces to t
 Excluded from the summary (the exact-RC reference itself did not converge; the rows are kept in the per-case tables below for the record, but their err/cover columns are not meaningful):
 
 - min5_b, omega = 3.00000000000000000e+00: truth error estimate 7.4e+00 after 6744366 steps (23782 s).
+- min5_small, omega = 3.00000000000000000e+01: truth error estimate 3.4e+00 after 3604566 steps (4527 s).
 
 ## min5_a, omega = 2.99999999999999989e-01 (N = 30, macro min, kappa = 0.550, gamma1 = 0.050, kappa_star = 0.3183)
 
@@ -105,6 +106,15 @@ Excluded from the summary (the exact-RC reference itself did not converge; the r
 |---|-------|-----------|-----------|-----------|--------|-------|---------|---------|-----------|--------|-----------|---------|-------|----------------|
 | 2 | 1.00 | 8.53e-01 | 4.91e-01 | 4.91e-01 | 8.62e+01 | 175.6x | 2.43e+01 | 3.47e-01 | 4.11e+00 | 9.13e+00 | nan | 9 | 8 | 1.5 |
 | 7 | 2.00 | 1.24e+00 | 1.06e+00 | 1.06e+00 | 3.96e+02 | 372.6x | 1.32e+02 | 1.93e-01 | 0.00e+00 | 3.05e+01 | nan | 4 | 3 | 1274.5 |
+
+## min5_small, omega = 3.00000000000000000e+01 (N = 10, macro min, kappa = 0.550, gamma1 = 0.050, kappa_star = 0.3184)
+
+**Warning: the exact-RC truth for this case did not converge** (error estimate 3.4e+00, 3604566 steps, 4527 s).  The err/cover columns below are **not usable**; the rows are kept for the record (budget, indicator and walls remain meaningful).  Excluded from the summary above.
+
+| K | R_cut | err plain | err micro | err first | budget | cover | E_shift | E_micro | E_missing | max wR | indicator | n_micro | flags | fold wall [s] |
+|---|-------|-----------|-----------|-----------|--------|-------|---------|---------|-----------|--------|-----------|---------|-------|----------------|
+| 2 | 1.00 | 1.03e+00 | 6.37e-01 | 6.37e-01 | 2.31e+02 | 362.8x | 7.29e+01 | 1.16e-01 | 4.11e+00 | 2.74e+01 | nan | 9 | 8 | 3.8 |
+| 7 | 2.00 | 1.43e+00 | 1.20e+00 | 1.20e+00 | 1.19e+03 | 986.1x | 3.95e+02 | 6.43e-02 | 0.00e+00 | 9.14e+01 | 6.9e-01 | 4 | 3 | 2504.3 |
 
 ## sad5_a, omega = 1.00000000000000000e+00 (N = 30, macro sad, kappa = 0.950, gamma1 = 0.450, kappa_star = 0.3183)
 
