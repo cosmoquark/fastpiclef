@@ -74,7 +74,7 @@ comparison = { features = ["comparison"], solve-group = "main" }
 [tool.pixi.tasks]
 # Build/install the extension into the active environment.
 build = "maturin develop --release"
-test-py = { cmd = "python tests/python/test_wrapper.py", depends-on = ["build"] }
+test-py = { cmd = "python tests/python/test_wrapper.py && python tests/python/test_stub.py", depends-on = ["build"] }
 
 # Jupyter tasks: scoped to the `notebook` feature (only that env has jupyter),
 # so `pixi run lab` / `pixi run notebook-*` auto-select the right environment.
@@ -103,4 +103,5 @@ wolensing = { cmd = "python -m comparison.wolensing_compare", depends-on = ["bui
 many-masses = { cmd = "cargo run --release --example many_masses --", depends-on = ["build"] }
 many-masses-fold = { cmd = "python -m comparison.many_masses_fold", depends-on = ["build"] }
 logistic-bridge = { cmd = "python -m comparison.logistic_bridge", depends-on = ["build"] }
+fast-paths = { cmd = "python -m comparison.fast_paths", depends-on = ["build"] }
 profiles-fiona = { cmd = "python comparison/profiles_fiona_check.py", depends-on = ["build"] }

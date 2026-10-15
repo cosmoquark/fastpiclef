@@ -39,6 +39,9 @@ pixi run build
 step "python wrapper tests"
 pixi run python tests/python/test_wrapper.py
 
+step "python type-stub drift test"
+pixi run python tests/python/test_stub.py
+
 if [ "$MODE" != "fast" ]; then
     step "comparison env: bindings rebuilt"
     # Each pixi env carries its own installed fastpiclef (AGENTS gotcha).
