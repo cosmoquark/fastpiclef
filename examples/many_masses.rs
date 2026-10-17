@@ -36,6 +36,10 @@ fn loadavg() -> f64 {
         .unwrap_or(f64::NAN)
 }
 
+fn threads() -> usize {
+    rayon::current_num_threads()
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let max_n: usize = args.first().and_then(|s| s.parse().ok()).unwrap_or(1000);
@@ -50,10 +54,12 @@ fn main() {
     if new {
         writeln!(
             fh,
-            "n_lenses,omega,wall_s,inner_solves,abs_value,error,rel_alpha,tail_angle,loadavg"
+            "n_lenses,omega,wall_s,inner_solves,abs_value,error,rel_alpha,tail_angle,threads,loadavg"
         )
         .unwrap();
-        println!("n_lenses,omega,wall_s,inner_solves,abs_value,error,rel_alpha,tail_angle,loadavg");
+        println!(
+            "n_lenses,omega,wall_s,inner_solves,abs_value,error,rel_alpha,tail_angle,threads,loadavg"
+        );
     }
 
     for n in [10usize, 30, 100, 300, 1000, 3000, 10000] {
@@ -79,15 +85,16 @@ fn main() {
                 f64::NAN
             };
             let la = loadavg();
+            let th = threads();
             println!(
-                "{n:6},{omega:6.3},{wall:10.4e},{:10},{:.8e},{:.3e},{rel_alpha:.3e},pi/4,{la:.2}",
+                "{n:6},{omega:6.3},{wall:10.4e},{:10},{:.8e},{:.3e},{rel_alpha:.3e},pi/4,{th},{la:.2}",
                 out.inner_solves,
                 out.value.norm(),
                 out.error
             );
             writeln!(
                 fh,
-                "{n},{omega},{wall:.6e},{},{:.12e},{:.6e},{rel_alpha:.6e},pi/4,{la:.2}",
+                "{n},{omega},{wall:.6e},{},{:.12e},{:.6e},{rel_alpha:.6e},pi/4,{th},{la:.2}",
                 out.inner_solves,
                 out.value.norm(),
                 out.error

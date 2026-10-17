@@ -28,6 +28,11 @@ import fastpiclef as fpl
 
 from .referee import slice_raw_from_nd
 
+
+def loadavg() -> float:
+    with open("/proc/loadavg") as fh:
+        return float(fh.read().split()[0])
+
 RESULTS = os.path.join(os.path.dirname(__file__), "results")
 
 OMEGAS = (10.0, 30.0, 100.0, 300.0, 1000.0)
@@ -91,14 +96,16 @@ def main():
         per = 1e3 * wall / max(steps, 1)
         print(f"{w:7.0f} {wall:10.3f} {steps:7d} {per:12.3f} {err:10.1e} {geo:10.1e}")
         rows.append(dict(case="point_mass", omega=w, threads=1, wall_s=wall, steps=steps,
-                         per_step_ms=per, rel_err_nd=err, geometric_rel_err=geo))
+                         per_step_ms=per, rel_err_nd=err, geometric_rel_err=geo,
+                         loadavg=loadavg()))
     print("== 3-mass field ==")
     for w in (10.0, 30.0, 100.0, 300.0):
         wall, steps, geo = measure_field(w)
         print(f"{w:7.0f} {wall:10.3f} {steps:7d}")
         rows.append(dict(case="field3", omega=w, threads=1, wall_s=wall, steps=steps,
                          per_step_ms=1e3 * wall / max(steps, 1),
-                         rel_err_nd=float("nan"), geometric_rel_err=float("nan")))
+                         rel_err_nd=float("nan"), geometric_rel_err=float("nan"),
+                         loadavg=loadavg()))
     print("== threaded (12 cores) point mass ==")
     for w in (100.0, 300.0, 1000.0):
         code = (
@@ -113,7 +120,7 @@ def main():
         print(f"{w:7.0f} {wall:10.3f} (threaded)")
         rows.append(dict(case="point_mass", omega=w, threads=os.cpu_count(), wall_s=wall,
                          steps=0, per_step_ms=float("nan"), rel_err_nd=float("nan"),
-                         geometric_rel_err=float("nan")))
+                         geometric_rel_err=float("nan"), loadavg=loadavg()))
 
     df = pd.DataFrame(rows)
     out = os.path.join(RESULTS, "high_omega.csv")

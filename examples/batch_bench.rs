@@ -11,6 +11,8 @@
 //!     production per-point thimble vs per-point RC;
 //!   * 2D source maps: N = 1, 3, 40 lenses, grids 16x16 and 64x64, omega = 1/3:
 //!     batch vs a per-point subsample (extrapolated, labelled);
+//!   * the N = 100 4x4 source map at omega = 3 (the report's amortisation
+//!     rounding case): batch vs a single-anchor extrapolation;
 //!   * frequency sweeps: 200 log-spaced omega in [0.01, 10], N = 1 and 40:
 //!     batch vs a per-point subsample.
 
@@ -38,17 +40,25 @@ fn threads() -> usize {
     rayon::current_num_threads()
 }
 
+fn loadavg() -> f64 {
+    std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|s| s.split_whitespace().next().and_then(|t| t.parse::<f64>().ok()))
+        .unwrap_or(f64::NAN)
+}
+
 fn log_row(case: &str, n_lenses: usize, grid: &str, n_omega: usize, mode: &str, wall: f64, note: &str) {
     let path = "comparison/results/batch_bench.csv";
     let new = !std::path::Path::new(path).exists();
     let mut fh = OpenOptions::new().create(true).append(true).open(path).unwrap();
     if new {
-        writeln!(fh, "case,n_lenses,grid,n_omega,threads,mode,wall_s,note").unwrap();
+        writeln!(fh, "case,n_lenses,grid,n_omega,threads,mode,wall_s,loadavg,note").unwrap();
     }
     writeln!(
         fh,
-        "{case},{n_lenses},{grid},{n_omega},{},{mode},{wall:.6e},{note}",
-        threads()
+        "{case},{n_lenses},{grid},{n_omega},{},{mode},{wall:.6e},{:.2},{note}",
+        threads(),
+        loadavg()
     )
     .unwrap();
 }
@@ -154,6 +164,50 @@ fn main() {
         }
     }
 
+    }
+
+    // ---- N = 100 masses, 4x4 source map (the amortisation rounding case) ----
+    if want("map-100") {
+        let n_lenses = 100usize;
+        let side = 4usize;
+        let omega = 3.0;
+        let lenses = deterministic_lenses(n_lenses, 0x9E3779B97F4A7C15);
+        let g: Vec<f64> = (0..side).map(|i| -1.0 + 2.0 * i as f64 / (side as f64 - 1.0)).collect();
+        let field = PointMassField { beta: [0.0, 0.0], lenses: lenses.clone() };
+        let cfg = SliceConfig { omega, ..Default::default() };
+        let batch = FieldBatch { omegas: vec![omega], beta0s: g.clone(), beta1s: g.clone() };
+        let t0 = Instant::now();
+        let out = slice_field_batch(&field, &batch, &cfg).unwrap();
+        let t_batch = t0.elapsed().as_secs_f64();
+        log_row(
+            "map-100",
+            n_lenses,
+            "4x4",
+            1,
+            "batch",
+            t_batch,
+            &format!("groups={}; {:.3} s/pt-equiv", out.groups, t_batch / 16.0),
+        );
+        // one scalar anchor at the nearest-to-centre grid point, extrapolated x16
+        let bc = g[side / 2];
+        let f = PointMassField { beta: [bc, bc], lenses: lenses.clone() };
+        let t0 = Instant::now();
+        let _ = slice_field(&f, &cfg).unwrap();
+        let t_1 = t0.elapsed().as_secs_f64();
+        let est = 16.0 * t_1;
+        log_row(
+            "map-100",
+            n_lenses,
+            "4x4",
+            1,
+            "scalar-anchor",
+            est,
+            &format!("1 point ({t_1:.3} s at beta=({bc:.3},{bc:.3})), x16"),
+        );
+        println!(
+            "map-100 N=100 4x4 w=3: batch {t_batch:.3} s vs scalar anchor est {est:.3} s  (speedup {:.1}x)",
+            est / t_batch
+        );
     }
 
     // ---- frequency sweeps ----
