@@ -8,7 +8,7 @@ use num_complex::Complex64;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
-use crate::images::{geometric_amplification, point_mass_field_images};
+use crate::images::{geometric_amplification, point_mass_field_image_data, point_mass_field_images};
 use crate::phases::{
     AiryPhase, CustomRationalLens, PointMass, PointMassField, RationalLens, RationalLens2D,
     SimGLens,
@@ -638,6 +638,45 @@ impl PyPointMass {
     }
 }
 
+/// One verified geometric-optics image of a `PointMassField`: position,
+/// Fermat potential, signed magnification and Morse index.
+#[pyclass(name = "FieldImage", frozen)]
+#[derive(Clone)]
+struct PyFieldImage {
+    #[pyo3(get)]
+    x: f64,
+    #[pyo3(get)]
+    y: f64,
+    #[pyo3(get)]
+    phi: f64,
+    #[pyo3(get)]
+    mu: f64,
+    #[pyo3(get)]
+    morse: f64,
+}
+
+#[pymethods]
+impl PyFieldImage {
+    fn __repr__(&self) -> String {
+        format!(
+            "FieldImage(x={:.6}, y={:.6}, phi={:.6}, mu={:.6}, morse={})",
+            self.x, self.y, self.phi, self.mu, self.morse
+        )
+    }
+}
+
+impl From<crate::images::ImageData> for PyFieldImage {
+    fn from(d: crate::images::ImageData) -> Self {
+        Self {
+            x: d.x[0],
+            y: d.x[1],
+            phi: d.phi,
+            mu: d.mu,
+            morse: d.morse,
+        }
+    }
+}
+
 /// A field of point-mass lenses (the microlensing / stellar-field problem).
 /// `lenses` is a list of `(x, y, mass)`; `beta = (bx, by)` is the source.
 /// The default solver is the exact RC slice reduction (`method="slice"`);
@@ -666,33 +705,55 @@ impl PyPointMassField {
         self.inner.lenses.len()
     }
 
-    /// The geometric-optics images (real solutions of the lens equation), each
-    /// as `(x1, x2)` (Path 2, M1 — the Witt-Mao polynomial).
-    fn images(&self) -> Vec<(f64, f64)> {
-        point_mass_field_images(self.inner.beta, &self.inner.lenses)
+    /// The verified geometric-optics images (real solutions of the lens
+    /// equation), each as `(x1, x2)`.  Multi-start Newton with per-star
+    /// companion ladders; the finder enforces a completeness certificate
+    /// (index identity + per-star companion) and raises instead of returning
+    /// a silently short list.
+    fn images(&self) -> PyResult<Vec<(f64, f64)>> {
+        Ok(point_mass_field_images(self.inner.beta, &self.inner.lenses)
+            .map_err(map_err)?
             .into_iter()
             .map(|p| (p[0], p[1]))
-            .collect()
+            .collect())
     }
 
-    /// Stationary-phase (geometric-optics) amplification: the sum over images
-    /// `|mu_i|^(1/2) exp(i w phi_i - i pi n_i)`. Fast (O(#images)) and exact as
-    /// `omega -> infinity` away from caustics (Path 2, M2). The `.error` field
-    /// is 0 (this is an asymptotic form, not an error-controlled quadrature).
+    /// The verified images with per-image data — a list of `FieldImage`
+    /// (`.x`, `.y`, `.phi`, `.mu`, `.morse`).
+    fn images_detailed(&self) -> PyResult<Vec<PyFieldImage>> {
+        Ok(
+            point_mass_field_image_data(self.inner.beta, &self.inner.lenses)
+                .map_err(map_err)?
+                .into_iter()
+                .map(PyFieldImage::from)
+                .collect(),
+        )
+    }
+
+    /// Stationary-phase (geometric-optics) amplification: the sum over
+    /// images `|mu_i|^(1/2) exp(i w phi_i - i pi n_i)`.
+    ///
+    /// Fast (O(#images)) and exact as `omega -> infinity` away from
+    /// caustics.  `.error` is 0 (this is an asymptotic form, not an
+    /// error-controlled quadrature).  The image set comes from the verified
+    /// finder; a failed completeness certificate raises, and so does a
+    /// degenerate image set (a caustic, where the sum is undefined).
     fn geometric(&self, omega: f64) -> PyResult<PyOutput> {
         if !(omega > 0.0) {
             return Err(PyValueError::new_err("omega must be > 0"));
         }
-        let f = geometric_amplification(self.inner.beta, &self.inner.lenses, omega);
+        let f = geometric_amplification(self.inner.beta, &self.inner.lenses, omega)
+            .map_err(map_err)?;
         let integral = f * free_space(2, omega);
         Ok(make_output(2, omega, integral, 0.0, "geometric", self.inner.lenses.len()))
     }
 
     /// Geometric-optics amplification **with the stationary-phase next-order
-    /// correction** (P4.1), with the polynomial-complete Witt-Mao image set:
+    /// correction** (P4.1), on the verified image set:
     /// `F = sum_j |mu_j|^(1/2) e^{i w phi_j - i pi n_j} (1 + C_j/(i w))`, the
     /// conservative estimate `sum_j |G0_j| |C_j| / w` in `.error` (integral
     /// units).  `None` (Python `None`) at a caustic; use `hybrid` or `solve`.
+    /// The image finder raises if its completeness certificate fails.
     fn geometric_corrected(&self, omega: f64) -> PyResult<Option<PyOutput>> {
         if !(omega > 0.0) {
             return Err(PyValueError::new_err("omega must be > 0"));
@@ -715,9 +776,10 @@ impl PyPointMassField {
     /// next-order correction when its conservative estimate is within `tol`
     /// (integral units), and the exact RC engine otherwise.  `.method` is
     /// `'geometric+correction'` or `'slice'`; the image set comes from the
-    /// polynomial-complete Witt-Mao solver, so the fast branch cannot miss an
-    /// image.  The default `tol = 1e-9` stays on the exact RC; raise it (e.g.
-    /// `1e-3`) to unlock the fast branch at high omega.
+    /// verified certificate-checked finder (a failed certificate raises),
+    /// so the fast branch cannot silently miss an image.  The default
+    /// `tol = 1e-9` stays on the exact RC; raise it (e.g. `1e-3`) to unlock
+    /// the fast branch at high omega.
     #[pyo3(signature = (omega, tol = 1e-9))]
     fn hybrid(&self, omega: f64, tol: f64) -> PyResult<PyOutput> {
         if !(omega > 0.0) {
@@ -1247,6 +1309,7 @@ fn fastpiclef(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRationalLens2D>()?;
     m.add_class::<PyPointMass>()?;
     m.add_class::<PyPointMassField>()?;
+    m.add_class::<PyFieldImage>()?;
     m.add_class::<PySweepResult>()?;
     m.add_class::<PyMapResult>()?;
     m.add_class::<PyLensField>()?;

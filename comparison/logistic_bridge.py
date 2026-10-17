@@ -32,10 +32,13 @@ M1  quadrupole macro (kappa = 0.3, gamma1 = 0.15) + central point mass
     (corrected 2.2e-3), so the bridge's transition-band error is not
     dominated by the ingredient.
 C1  the caustic family: the point mass at y = 0, 0.02, 0.05, 0.1, 0.2.  At
-    y = 0 the image finder returns no images (the two images sit on the
-    critical curve; det -> 0 is skipped), so F_geo = 0, while the exact |F|
-    grows like sqrt(omega) (the Einstein-ring stationary *manifold*) -- a
-    logistic blend between 1 and 0 cannot represent that.
+    y = 0 there is no discrete geometric sum: the image set is the whole
+    Einstein ring (a degenerate image), and since the finder fix of
+    2026-10-17 the package *reports* that (`geometric` raises) instead of
+    returning the old silent empty list (F_geo = 0).  The case is recorded
+    with F_geo = NaN and carries no fits; the exact |F| grows like
+    sqrt(omega) (the Einstein-ring stationary *manifold*) -- a logistic
+    blend between 1 and a finite anchor cannot represent that.
 
 Reference: the exact RC engine via the batched ``sweep``.  Referees: the
 Nakamura-Deguchi closed form (moduli, machine-exact for the point-mass cases
@@ -152,12 +155,21 @@ def run(args):
         sw = field.sweep([float(w) for w in omegas])
         Fex = np.asarray(sw.amplification, dtype=complex)
         ex_err = np.asarray(sw.error, dtype=float)
-        Fgeo = np.array([field.geometric(omega=float(w)).amplification
-                         for w in omegas], dtype=complex)
-        n_im = len(field.images())
-        print(f"   {n_im} images, |F_geo| = {np.abs(Fgeo).min():.3e}"
-              f"..{np.abs(Fgeo).max():.3e}; sweep: {sw.inner_solves} inner "
-              f"solves in {sw.groups} groups")
+        try:
+            Fgeo = np.array([field.geometric(omega=float(w)).amplification
+                             for w in omegas], dtype=complex)
+            n_im = len(field.images())
+            print(f"   {n_im} images, |F_geo| = {np.abs(Fgeo).min():.3e}"
+                  f"..{np.abs(Fgeo).max():.3e}; sweep: {sw.inner_solves} inner "
+                  f"solves in {sw.groups} groups")
+        except RuntimeError as exc:
+            # A caustic (e.g. y = 0 in C1): no discrete image set, so no
+            # geometric anchor.  The finder reports it (see the module
+            # docstring); record NaNs and skip this case's fits.
+            print(f"   no discrete image set (caustic): {exc}")
+            Fgeo = np.full(len(omegas), complex(np.nan, np.nan))
+            n_im = 0
+        fit_ok = bool(np.all(np.isfinite(Fgeo)))
 
         # referees -------------------------------------------------------
         if case["kind"] == "point":
@@ -190,22 +202,27 @@ def run(args):
                 detail=f"omega = {omegas[k]:.6g}"))
 
         # fitting --------------------------------------------------------
-        grid1, best1 = fit_case(omegas, Fex, Fgeo, "v1")
-        grid2, best2 = fit_case(omegas, Fex, Fgeo, "v2")
-        print(f"   tuned V1: omega_c = {best1[1]:.4g}, p = {best1[2]:.4g}, "
-              f"max rel = {best1[0]:.3e}")
-        print(f"   tuned V2: omega_c = {best2[1]:.4g}, p = {best2[2]:.4g}, "
-              f"max rel = {best2[0]:.3e}")
+        if fit_ok:
+            grid1, best1 = fit_case(omegas, Fex, Fgeo, "v1")
+            grid2, best2 = fit_case(omegas, Fex, Fgeo, "v2")
+            print(f"   tuned V1: omega_c = {best1[1]:.4g}, p = {best1[2]:.4g}, "
+                  f"max rel = {best1[0]:.3e}")
+            print(f"   tuned V2: omega_c = {best2[1]:.4g}, p = {best2[2]:.4g}, "
+                  f"max rel = {best2[0]:.3e}")
+            for variant, best in (("v1", best1), ("v2", best2)):
+                er = rel_err(blend(variant, omegas, Fgeo, best[1], best[2]), Fex)
+                fit_rows.append(dict(
+                    case=name, variant=variant, tier="tuned",
+                    omega_c=_fmt(best[1]), p=_fmt(best[2]),
+                    max_err=_fmt(er.max()),
+                    rms_err=_fmt(np.sqrt((er ** 2).mean())),
+                    omega_at_max=_fmt(omegas[int(np.argmax(er))])))
+        else:
+            # Caustic: no geometric anchor, no fits (all-NaN rows below).
+            grid1 = grid2 = None
+            best1 = best2 = (float("nan"), float("nan"), float("nan"))
         data[name] = dict(case=case, Fex=Fex, Fgeo=Fgeo, ex_err=ex_err,
                           grid1=grid1, grid2=grid2, best1=best1, best2=best2)
-        for variant, best in (("v1", best1), ("v2", best2)):
-            er = rel_err(blend(variant, omegas, Fgeo, best[1], best[2]), Fex)
-            fit_rows.append(dict(
-                case=name, variant=variant, tier="tuned",
-                omega_c=_fmt(best[1]), p=_fmt(best[2]),
-                max_err=_fmt(er.max()),
-                rms_err=_fmt(np.sqrt((er ** 2).mean())),
-                omega_at_max=_fmt(omegas[int(np.argmax(er))])))
         for variant, label in (("geo anchor", rel_err(Fgeo, Fex)),
                                ("F=1 only", rel_err(np.ones_like(Fex), Fex))):
             fit_rows.append(dict(

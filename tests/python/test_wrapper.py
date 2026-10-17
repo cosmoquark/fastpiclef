@@ -123,6 +123,38 @@ def test_point_mass_field_methods():
             raise AssertionError(f"expected ValueError for {bad}")
 
 
+def test_point_mass_field_images_complete():
+    # The old Witt-Mao finder silently returned [] from N=5 on; the certified
+    # structural finder replaced it (2026-10-17).  Field: the first 5 stars of
+    # the getting-started 40-mass stock (seed 7, masses 0.05).  Reference: an
+    # 80-digit mpmath root solve -- 6 images (main + one companion per star),
+    # sum |mu| = 1.0020887392067522767, F_geo(2) as pinned below.
+    stock = [
+        (0.75057279962800205, 2.3832828058174531),
+        (1.6541141414711609, -1.6487568600564488),
+        (-1.1990022905326474, 2.2413206723775714),
+        (-2.9684081726065514, 1.9273705102965977),
+        (1.7824165725122771, -0.19239028293767557),
+    ]
+    field = fpl.PointMassField([(x, y, 0.05) for x, y in stock], beta=(0.5, 0.2))
+    imgs = field.images()
+    assert len(imgs) == 6, imgs
+    data = field.images_detailed()
+    assert len(data) == 6
+    assert {(im.x, im.y) for im in data} == {tuple(p) for p in imgs}
+    assert all(im.morse in (0.0, 0.5, 1.0) for im in data)
+    mu_sum = sum(abs(im.mu) for im in data)
+    assert abs(mu_sum - 1.0020887392067523) < 1e-9, mu_sum
+    # every star owns its faint companion image
+    for x, y in stock:
+        assert any(
+            math.hypot(im.x - x, im.y - y) <= 2 * math.sqrt(0.05) + 0.1 for im in data
+        )
+    g = field.geometric(2.0)
+    want = 0.9266206441958274 - 0.4057561845676481j
+    assert abs(g.amplification - want) < 1e-8, g
+
+
 def test_field_sweep_matches_solve():
     # Batched sweep: one shared contour per band; each entry must match the
     # single-point production solve (a different contour — Cauchy), and the

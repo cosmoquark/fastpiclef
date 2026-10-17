@@ -22,6 +22,7 @@ __all__ = [
     "RationalLens2D",
     "PointMass",
     "PointMassField",
+    "FieldImage",
     "SweepResult",
     "MapResult",
     "LensField",
@@ -334,6 +335,27 @@ class PointMass:
         ...
 
 
+class FieldImage:
+    """One verified geometric-optics image of a `PointMassField`: position,
+    Fermat potential, signed magnification and Morse index.
+
+    Attributes:
+        x: image x-coordinate.
+        y: image y-coordinate.
+        phi: Fermat potential at the image.
+        mu: signed magnification `1/det H` (negative for saddle images).
+        morse: Morse index: 0 (minimum), 0.5 (saddle) or 1 (maximum).
+    """
+
+    x: float
+    y: float
+    phi: float
+    mu: float
+    morse: float
+
+    def __repr__(self) -> str: ...
+
+
 class PointMassField:
     """A field of point-mass lenses (the microlensing / stellar-field
     problem).
@@ -353,8 +375,18 @@ class PointMassField:
         beta: tuple[float, float] = (0.0, 0.0),
     ) -> None: ...
     def images(self) -> list[tuple[float, float]]:
-        """The geometric-optics images (real solutions of the lens equation),
-        each as `(x1, x2)` -- the polynomial-complete Witt-Mao finder."""
+        """The verified geometric-optics images (real solutions of the lens
+        equation), each as `(x1, x2)`.
+
+        Multi-start Newton with per-star companion ladders; the finder
+        enforces a completeness certificate (index identity + per-star
+        companion) and raises instead of returning a silently short list.
+        """
+        ...
+
+    def images_detailed(self) -> list[FieldImage]:
+        """The verified images with per-image data -- a list of `FieldImage`
+        (`.x`, `.y`, `.phi`, `.mu`, `.morse`)."""
         ...
 
     def geometric(self, omega: float) -> Result:
@@ -363,7 +395,9 @@ class PointMassField:
 
         Fast (O(#images)) and exact as `omega -> infinity` away from
         caustics.  `.error` is 0 (this is an asymptotic form, not an
-        error-controlled quadrature).
+        error-controlled quadrature).  The image set comes from the verified
+        finder; a failed completeness certificate raises, and so does a
+        degenerate image set (a caustic, where the sum is undefined).
         """
         ...
 
@@ -374,7 +408,8 @@ class PointMassField:
         `sum_j |G0_j| |C_j| / w` reported in `.error` (integral units).
 
         Returns `None` at a caustic, where the asymptotic form is invalid;
-        use `hybrid` or `solve` there.
+        use `hybrid` or `solve` there.  The image finder raises if its
+        completeness certificate fails.
         """
         ...
 
@@ -383,9 +418,11 @@ class PointMassField:
         stationary-phase next-order correction when its conservative estimate
         is within `tol` (integral units), and the exact RC engine otherwise.
 
-        `.method` is `"geometric+correction"` or `"slice"`.  The default
-        `tol = 1e-9` stays on the exact RC; raise it (e.g. `1e-3`) to unlock
-        the fast branch at high omega.
+        `.method` is `"geometric+correction"` or `"slice"`; the image set
+        comes from the verified certificate-checked finder (a failed
+        certificate raises), so the fast branch cannot silently miss an image.
+        The default `tol = 1e-9` stays on the exact RC; raise it (e.g. `1e-3`)
+        to unlock the fast branch at high omega.
         """
         ...
 

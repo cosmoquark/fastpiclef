@@ -164,8 +164,8 @@ fn hybrid_switches_and_respects_its_budget() {
 
 #[test]
 fn point_mass_field_hybrid_matches_the_lens_field_path() {
-    // The polynomial-complete image set (Witt-Mao) must give the same corrected
-    // sum as the general Newton-image path, and cover against the exact RC.
+    // The point-mass verified image set must give the same corrected sum as
+    // the general Newton-image path, and cover against the exact RC.
     let lenses = [(0.6, 0.0, 0.4), (-0.5, 0.4, 0.3), (0.1, -0.6, 0.35)];
     let source = [0.2, 0.1];
     let omega = 100.0;

@@ -104,7 +104,10 @@ a *referee* for the 2D engine (independent method, same physics).
   **missing** image.  The Newton finder is dense (24×24), jittered and
   residual-verified after a silent miss was found (the unit point mass at
   y = 1: 9.6% error with a 1.5e-3 budget); the point-mass-only entry points use
-  the polynomial-complete Witt–Mao finder.
+  the certificate-checked structural finder (per-star companion ladders +
+  index-identity certificate; a violated certificate raises — 2026-10-17, after
+  the old Witt–Mao polynomial route was found numerically dead for N ≳ 5 in
+  f64 and to fail silently).
 
 ## 7. The geometric-optics path (`geometric`, `images`)
 

@@ -18,6 +18,17 @@ pub enum Error {
     /// thimble→mesh fallback; the mesh-flow solver handles caustics natively.
     #[error("degenerate saddle (caustic); use the mesh-flow solver")]
     DegenerateSaddle,
+    /// The geometric-optics image finder failed its completeness
+    /// certificate (the index identity or the per-star companion check; see
+    /// [`crate::images`]).  The image set, and anything derived from it, must
+    /// not be trusted — this is deliberately *not* a silent short list.
+    #[error("image search failed its completeness certificate: {0}")]
+    ImageSearch(&'static str),
+    /// The image search landed on a degenerate image (`|det H|` at the
+    /// caustic floor): the stationary-phase form is invalid there — use the
+    /// exact integral.
+    #[error("degenerate image (caustic); the geometric-optics form is invalid — use solve()")]
+    DegenerateImage,
     #[error("invalid input: {0}")]
     InvalidInput(&'static str),
     #[error("not yet implemented: {0}")]

@@ -498,8 +498,8 @@ pub fn lens_field_batch(
 /// image-local stationary-phase estimate cannot see.  Completeness is still not
 /// *certified* for arbitrary fields: the point-mass-only entry points
 /// ([`point_mass_field_geometric_corrected`] / [`point_mass_field_hybrid`]) use
-/// the polynomial-complete Witt-Mao finder
-/// ([`crate::images::point_mass_field_images`]) instead.
+/// the certificate-checked [`crate::images::point_mass_field_images`] finder
+/// instead.
 pub fn lens_field_images(field: &LensField) -> Vec<[f64; 2]> {
     let g = |x: [f64; 2]| -> [f64; 2] {
         let gr = field.gradient(&SVector::<Complex64, 2>::new(
@@ -981,18 +981,24 @@ fn point_mass_equivalent(
 }
 
 /// Geometric-optics amplification **with the stationary-phase correction** for
-/// a field of point masses, with the *polynomial-complete* Witt-Mao image set
-/// ([`crate::images::point_mass_field_images`]) — for a point-mass-only field
-/// the image list is guaranteed complete, so the geometric branch cannot
-/// silently miss an image (unlike the general Newton finder).  `Ok(None)` at a
-/// caustic, where the asymptotic form is invalid.
+/// a field of point masses, with the verified (certificate-checked) image set
+/// from [`crate::images::point_mass_field_images`].  A failed completeness
+/// certificate is an error; `Ok(None)` at a caustic, where the asymptotic form
+/// is invalid.
 pub fn point_mass_field_geometric_corrected(
     source: [f64; 2],
     lenses: &[(f64, f64, f64)],
     omega: f64,
 ) -> Result<Option<GeometricCorrected>> {
     let field = point_mass_equivalent(source, lenses)?;
-    let images = crate::images::point_mass_field_images(source, lenses);
+    let images = match crate::images::point_mass_field_images(source, lenses) {
+        Ok(images) => images,
+        // A caustic: `None` is this function's documented "asymptotic form
+        // invalid" answer.  Any other finder error (a violated certificate)
+        // is a bug worth surfacing, so it propagates.
+        Err(Error::DegenerateImage) => return Ok(None),
+        Err(e) => return Err(e),
+    };
     let n = images.len();
     Ok(sp_corrected_sum(&field, &images, omega)
         .map(|(value, error)| GeometricCorrected {
@@ -1003,10 +1009,10 @@ pub fn point_mass_field_geometric_corrected(
 }
 
 /// High-omega hybrid for a field of point masses ([`crate::images`]): the same
-/// correction as [`lens_field_hybrid`], but the images come from the
-/// *polynomial-complete* Witt-Mao solver rather than the multi-start Newton
-/// finder — for a point-mass-only field the image list is then guaranteed
-/// complete, so the geometric branch cannot silently miss an image.
+/// correction as [`lens_field_hybrid`], but the images come from the verified
+/// certificate-checked finder rather than the general multi-start Newton grid
+/// — a failed completeness certificate is an error, so the geometric branch
+/// can no longer silently miss an image.
 /// `lenses` is a list of `(x, y, mass)`; the phase convention matches
 /// [`crate::phases::PointMassField`] and
 /// [`crate::images::geometric_amplification`].
@@ -1018,7 +1024,14 @@ pub fn point_mass_field_hybrid(
 ) -> Result<HybridOutput> {
     let field = point_mass_equivalent(source, lenses)?;
     let fs = free_space_2d(omega);
-    let images = crate::images::point_mass_field_images(source, lenses);
+    // The geometric branch needs a trustworthy image set.  A degenerate
+    // (caustic) or certificate-failed set falls through to the exact RC
+    // engine below — caustics are its home turf — so any finder error maps to
+    // the empty set (= no geometric branch) rather than propagating.
+    let images = match crate::images::point_mass_field_images(source, lenses) {
+        Ok(images) => images,
+        Err(_) => Vec::new(),
+    };
     if let Some((value, error)) = sp_corrected_sum(&field, &images, omega) {
         if error * fs.norm() <= tol {
             return Ok(HybridOutput {
@@ -1140,8 +1153,7 @@ mod tests {
     }
 
     /// Geometric optics at kappa = gamma = 0 must coincide with the
-    /// polynomial (Witt-Mao) point-mass implementation: same images, same
-    /// stationary-phase sum.
+    /// point-mass implementation: same images, same stationary-phase sum.
     #[test]
     fn geometric_matches_point_mass_at_kappa_gamma_zero() {
         let lenses = vec![(-0.8, 0.5, 0.6), (0.9, -0.4, 0.4)];
@@ -1155,7 +1167,7 @@ mod tests {
         )
         .unwrap();
         let ims = lens_field_images(&lf);
-        let poly = crate::images::point_mass_field_images(beta, &lenses);
+        let poly = crate::images::point_mass_field_images(beta, &lenses).unwrap();
         assert_eq!(ims.len(), poly.len(), "image count: {ims:?} vs {poly:?}");
         for p in &poly {
             let best = ims
@@ -1166,8 +1178,30 @@ mod tests {
         }
         let omega = 100.0;
         let a = lens_field_geometric(&lf, omega);
-        let b = crate::images::geometric_amplification(beta, &lenses, omega);
+        let b = crate::images::geometric_amplification(beta, &lenses, omega).unwrap();
         assert!((a - b).norm() / b.norm() < 1e-5, "{a} vs {b}");
+    }
+
+    /// A caustic (beta = 0 for an isolated point mass) has no discrete
+    /// geometric sum: `geometric_corrected` answers `None` (its documented
+    /// "asymptotic form invalid") and the hybrid falls back to the exact RC
+    /// instead of poisoning the fast branch with a degenerate image set.
+    #[test]
+    fn point_mass_caustic_has_no_geometric_branch() {
+        let lenses = [(0.0, 0.0, 1.0)];
+        let src = [0.0, 0.0];
+        assert!(
+            point_mass_field_geometric_corrected(src, &lenses, 2.0)
+                .unwrap()
+                .is_none()
+        );
+        let h = point_mass_field_hybrid(src, &lenses, 2.0, 1e-3).unwrap();
+        assert_eq!(h.method, HybridMethod::Rc);
+        let direct = crate::phases::PointMassField { beta: src, lenses: lenses.to_vec() };
+        let exact =
+            crate::slice::slice_field(&direct, &SliceConfig { omega: 2.0, ..Default::default() })
+                .unwrap();
+        assert!((h.value - exact.value).norm() / exact.value.norm() < 1e-13);
     }
 
     /// Macro-only: a single image at the quadratic centre with
