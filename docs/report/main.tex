@@ -582,8 +582,11 @@ missing image; the Newton image finder is therefore dense ($24\times24$,
 golden-ratio jittered) and residual-verified --- installed after a silent
 miss was found (the faint image of the unit point mass at $y=1$: a $9.6\%$
 error inside a $1.5\times10^{-3}$ budget with an aligned $8\times8$ start
-grid).  Point-mass-only entry points use the polynomial-complete
-Witt--Mao finder instead.
+grid).  Point-mass-only entry points use a dedicated finder --- per-star
+companion-image ladders plus a completeness certificate (index identity and
+per-star companions; violations raise) --- after the polynomial-complete
+Witt--Mao route was retired on 2026-10-17, measured numerically dead and
+\emph{silent} for $N\gtrsim5$ in double precision.
 
 \subsection{Geometric optics and image finding}
 The geometric sum of Eq.~\eqref{eq:geo} and the images themselves are
@@ -879,9 +882,11 @@ coefficient $1/\sqrt{2\varphi''}$ (measured $0.497$ against $0.500$).
 
 \subsection{Accuracy limits}
 \begin{itemize}
-\item Image completeness is certified only for point-mass-only fields
-  (polynomial-complete finder); the general-field finder is dense and
-  residual-verified but not certified (Sec.~\ref{sec:engines}).
+\item Image completeness is set-checked only for point-mass-only fields
+  (index-identity certificate plus per-star companion seeding; violations
+  raise); a missed opposite-sign image pair would not be caught, though the
+  dense seeding makes it implausible.  The general-field finder is dense and
+  residual-verified but not checked (Sec.~\ref{sec:engines}).
 \item The high-$\omega$ budget covers the asymptotic error at found images,
   not missing images (same caveat).
 \item The low-$\omega$ free-space subtraction currently lives in the Python
@@ -933,10 +938,12 @@ configuration), and $14$--$86\%$ across a caustic-approach family
 ($y=0.02$--$0.2$); one fixed pair costs $18$--$41\%$ and a
 calibration-free $(1,2)$ window $22$--$46\%$ --- against the exact
 solver's $10^{-13}$.  The failures are structural, not tuning: at the
-caustic ($y=0$) the image finder returns no images at all
-($F_{\mathrm{geo}}=0$) while the exact $|F|$ grows like $\sqrt{\omega}$
-(the Einstein-ring stationary manifold), and wherever two images nearly
-cancel the bridge inherits the spurious geometric null.  Logistic
+caustic ($y=0$) there is no discrete image set at all --- the finder now
+*reports* the degenerate Einstein ring rather than a value (the recorded
+$F_{\mathrm{geo}}=0$ rows come from the pre-2026-10-17 finder that failed
+silently to an empty image list) --- while the exact $|F|$ grows like
+$\sqrt{\omega}$ (the Einstein-ring stationary manifold), and wherever two
+images nearly cancel the bridge inherits the spurious geometric null.  Logistic
 bridging cannot stand in for the RC engine at anything like this
 precision over the wave transition band; the dataset is
 \texttt{comparison/results/logistic\_bridge.\{csv,md,png\}}.
@@ -945,11 +952,9 @@ precision over the wave transition band; the dataset is
 \begin{itemize}
 \item Elliptical profiles (SIE/EPL) via complex-affine quadratic forms: a
   separate branch-structure study.
-\item The end-stage comparison against a heuristic logistic-bridging
-  implementation of the wave/geometric transition (the project's original
-  plan lists this explicitly last).
-\item Notebooks demonstrating the high-$\omega$ hybrid and the ND fast path
-  are pending.
+\item Scalable many-mass fields: an FMM-style multipole treatment with
+  winding control (see the cost analysis above), or an explicitly
+  approximate mode accepted by the science.
 \end{itemize}
 
 % ============================================================================
