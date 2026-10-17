@@ -333,6 +333,73 @@ def test_slice_inner_rc_free_space():
     assert math.isfinite(abs(r2.integral)) and r2.error < 1e-10, r2
 
 
+def test_sigint_interrupts_long_solve():
+    # A kernel "Stop" (SIGINT) must abort a long field solve *promptly*, at the
+    # next orchestration boundary, rather than at call completion: before the
+    # cooperative probe the KeyboardInterrupt only surfaced when the Rust call
+    # returned (measured 5 s -> 54 s on this solve).  The child runs in a
+    # subprocess so the signal cannot hit the test process.  `RAYON_NUM_THREADS`
+    # is pinned so the boundary granularity (and hence the abort latency) is
+    # reproducible; the un-interrupted solve needs about two minutes here.
+    import os
+    import signal
+    import subprocess
+    import sys
+    import textwrap
+    import time
+
+    code = textwrap.dedent(
+        """
+        import time
+        import fastpiclef as fpl
+        field = fpl.PointMassField(
+            [(0.750572799628002, 2.383282805817453, 0.05),
+             (1.6541141414711609, -1.6487568600564488, 0.05)],
+            beta=(0.5, 0.2),
+        )
+        print("ready", flush=True)
+        t0 = time.time()
+        try:
+            field.solve(1000.0)
+            print(f"COMPLETED {time.time() - t0:.1f}", flush=True)
+        except KeyboardInterrupt:
+            print(f"INTERRUPTED {time.time() - t0:.1f}", flush=True)
+        """
+    )
+    env = dict(os.environ, RAYON_NUM_THREADS="4")
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
+    )
+    try:
+        while True:
+            line = proc.stdout.readline()
+            assert line, "child exited before becoming ready"
+            if "ready" in line:
+                break
+        # Make sure the child is inside the Rust call before signalling: a
+        # SIGINT delivered before the extension call is raised by Python's own
+        # handler at the next bytecode, which would not exercise the probe.
+        time.sleep(1.0)
+        proc.send_signal(signal.SIGINT)
+        out, _ = proc.communicate(timeout=120.0)
+        assert "INTERRUPTED" in out, out
+        assert "COMPLETED" not in out, out
+        elapsed = float(out.split("INTERRUPTED", 1)[1].split()[0])
+        # >= the pre-signal delay proves the signal landed inside the call;
+        # < 45 s separates a boundary abort from running the full solve
+        # (~two minutes at four threads).
+        assert elapsed >= 0.5, f"signal was handled before the solve started: {elapsed:.1f}s"
+        assert elapsed < 45.0, f"interrupt took {elapsed:.1f}s — not a prompt abort"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

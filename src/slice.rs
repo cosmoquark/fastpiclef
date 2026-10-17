@@ -220,6 +220,30 @@ pub fn branch_point_indicator(field: &PointMassField, x2: f64, omega: f64) -> f6
     worst
 }
 
+/// Cooperative interrupt probe for the slice/batch orchestration loops:
+/// returning `true` aborts a long call with [`Error::Interrupted`].
+///
+/// The probe is called **only on the calling thread**, at boundaries between
+/// quadrature work units (task rounds, bands, outer-contour legs) — never from
+/// inside a rayon task — because callers wire it to state (the `fastpiclef`
+/// binding wires it to Python's signal machinery) that is only safe to touch
+/// there.  It does not touch the arithmetic: an uninterrupted call returns
+/// bitwise-identical results to one without a probe.
+#[derive(Clone)]
+pub struct InterruptHook(std::sync::Arc<dyn Fn() -> bool + Send + Sync>);
+
+impl InterruptHook {
+    pub fn new(f: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self(std::sync::Arc::new(f))
+    }
+}
+
+impl std::fmt::Debug for InterruptHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("InterruptHook(..)")
+    }
+}
+
 /// Configuration of the RC (real core + rotated tails) slice kernels —
 /// [`slice_inner_rc`] here, and the outer integral of the 2D field solver.
 #[derive(Debug, Clone)]
@@ -248,6 +272,10 @@ pub struct SliceConfig {
     /// grouped greedily while `omega_max/omega_min <= band_ratio` (each band
     /// gets its own contour, sized for the band's hardest frequency).
     pub band_ratio: f64,
+    /// Cooperative interrupt probe, checked at orchestration boundaries only
+    /// (between task rounds / bands / outer-contour legs, on the calling
+    /// thread).  `None` (default) never probes; see [`InterruptHook`].
+    pub interrupt: Option<InterruptHook>,
 }
 
 impl Default for SliceConfig {
@@ -261,8 +289,22 @@ impl Default for SliceConfig {
             parallel: true,
             tail_angle: std::f64::consts::FRAC_PI_4,
             band_ratio: 10.0,
+            interrupt: None,
         }
     }
+}
+
+/// Probe the config's cooperative interrupt hook (if any) at an orchestration
+/// boundary.  See [`SliceConfig::interrupt`]: only call this on the thread that
+/// owns the hook's state (for the Python binding: the GIL-holding caller).
+#[inline]
+pub(crate) fn check_interrupted(cfg: &SliceConfig) -> Result<()> {
+    if let Some(hook) = &cfg.interrupt {
+        if hook.0() {
+            return Err(Error::Interrupted);
+        }
+    }
+    Ok(())
 }
 
 /// Model interface of the RC slice kernels: the engine owns the geometry
@@ -770,9 +812,25 @@ pub(crate) fn slice_field_g<M: SliceModel>(field: &M, cfg: &SliceConfig) -> Resu
         integrate(&f, 0.0, rmax, &outer_cfg, cfg.parallel)
     };
     let core: Vec<AdaptiveResult> = if cfg.parallel {
-        core_tasks.par_iter().map(run_core).collect()
+        // Cooperative interrupt checks happen only here, on the calling
+        // thread, between rounds of tasks: the hook may touch state (Python's
+        // signal machinery) that is unsafe off the GIL-holding thread.  The
+        // rounds preserve task order, so results stay bitwise identical.
+        let rounds = 8usize;
+        let chunk = core_tasks.len().div_ceil(rounds).max(1);
+        let mut all = Vec::with_capacity(core_tasks.len());
+        for round in core_tasks.chunks(chunk) {
+            check_interrupted(cfg)?;
+            all.par_extend(round.par_iter().map(run_core));
+        }
+        all
     } else {
-        core_tasks.iter().map(run_core).collect()
+        let mut all = Vec::with_capacity(core_tasks.len());
+        for task in &core_tasks {
+            check_interrupted(cfg)?;
+            all.push(run_core(task));
+        }
+        all
     };
 
     let mut value = Complex64::new(0.0, 0.0);
@@ -816,6 +874,7 @@ pub(crate) fn slice_field_g<M: SliceModel>(field: &M, cfg: &SliceConfig) -> Resu
         (res.value, res.error + extra)
     };
     let tail_tasks = [(b2, 1.0), (a2, -1.0)];
+    check_interrupted(cfg)?;
     let tails: Vec<(Complex64, f64)> = if cfg.parallel {
         tail_tasks.par_iter().map(run_tail).collect()
     } else {

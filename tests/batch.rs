@@ -9,8 +9,8 @@
 
 use fast_picard_lefshetz_integral_code::phases::{CustomRationalLens, PointMassField, RationalLens, SimGLens};
 use fast_picard_lefshetz_integral_code::{
-    FieldBatch, SliceConfig, ThimbleConfig, ThimbleSolver, rc_1d_batch, slice_field,
-    slice_field_batch,
+    Error, FieldBatch, InterruptHook, SliceConfig, ThimbleConfig, ThimbleSolver, rc_1d_batch,
+    slice_field, slice_field_batch,
 };
 use num_complex::Complex64;
 
@@ -373,4 +373,25 @@ fn rc1d_rejects_bad_lenses() {
     // omega <= 0
     let good = RationalLens { beta: 0.0, kappa: -2.0 };
     assert!(rc_1d_batch(&good, &[0.0], 0.0, &cfg).is_err());
+}
+
+/// The cooperative interrupt hook on the batch path: a firing probe aborts
+/// with [`Error::Interrupted`] at the first band boundary.
+#[test]
+fn interrupt_hook_aborts_batch() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let field = two_mass();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    let firing = InterruptHook::new(move || {
+        counter.fetch_add(1, Ordering::Relaxed);
+        true
+    });
+    let cfg = SliceConfig { omega: 10.0, interrupt: Some(firing), ..Default::default() };
+    let batch = FieldBatch { omegas: vec![1.0, 10.0], beta0s: vec![0.2], beta1s: vec![0.1] };
+    let err = slice_field_batch(&field, &batch, &cfg).unwrap_err();
+    assert!(matches!(err, Error::Interrupted), "{err:?}");
+    assert!(calls.load(Ordering::Relaxed) >= 1);
 }

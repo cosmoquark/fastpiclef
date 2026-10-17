@@ -142,11 +142,11 @@ fn hybrid_switches_and_respects_its_budget() {
     let omega = 100.0;
     let rc = lens_field_solve(&field, &SliceConfig { omega, ..Default::default() }).unwrap();
     // Tight tolerance: the asymptotic estimate cannot meet it -> exact RC.
-    let tight = lens_field_hybrid(&field, omega, 1e-12).unwrap();
+    let tight = lens_field_hybrid(&field, omega, 1e-12, None).unwrap();
     assert_eq!(tight.method, HybridMethod::Rc);
     assert!((tight.value - rc.value).norm() < 1e-9 * rc.value.norm());
     // Loose tolerance: the geometric branch, and its budget covers the truth.
-    let loose = lens_field_hybrid(&field, omega, 0.05).unwrap();
+    let loose = lens_field_hybrid(&field, omega, 0.05, None).unwrap();
     assert_eq!(loose.method, HybridMethod::GeometricCorrected);
     assert!(loose.images >= 2);
     let resid = (loose.value - rc.value).norm();
@@ -169,7 +169,7 @@ fn point_mass_field_hybrid_matches_the_lens_field_path() {
     let lenses = [(0.6, 0.0, 0.4), (-0.5, 0.4, 0.3), (0.1, -0.6, 0.35)];
     let source = [0.2, 0.1];
     let omega = 100.0;
-    let h = point_mass_field_hybrid(source, &lenses, omega, 1.0).unwrap();
+    let h = point_mass_field_hybrid(source, &lenses, omega, 1.0, None).unwrap();
     assert_eq!(h.method, HybridMethod::GeometricCorrected);
     assert_eq!(h.images, 6);
     let comps: Vec<Component> = lenses.iter().map(|&(x, y, m)| point(x, y, m)).collect();
@@ -208,7 +208,7 @@ fn hybrid_falls_back_at_the_point_mass_caustic() {
             g.error
         );
     }
-    let h = lens_field_hybrid(&field, omega, 1e-3).unwrap();
+    let h = lens_field_hybrid(&field, omega, 1e-3, None).unwrap();
     assert_eq!(h.method, HybridMethod::Rc);
     let rc = lens_field_solve(&field, &SliceConfig { omega, ..Default::default() }).unwrap();
     assert!((h.value - rc.value).norm() < 1e-9 * rc.value.norm());

@@ -15,8 +15,8 @@
 use fast_picard_lefshetz_integral_code::phases::PointMassField;
 use fast_picard_lefshetz_integral_code::roots::poly_eval;
 use fast_picard_lefshetz_integral_code::{
-    Error, Output, Phase, SliceConfig, ThimbleConfig, X1SlicePhase, branch_point_indicator,
-    slice_inner, slice_inner_rc,
+    Error, InterruptHook, Output, Phase, SliceConfig, ThimbleConfig, X1SlicePhase,
+    branch_point_indicator, slice_field, slice_inner, slice_inner_rc,
 };
 use nalgebra::SVector;
 use num_complex::Complex64;
@@ -332,4 +332,35 @@ fn inner_rc_rejects_bad_input() {
     assert!(matches!(err, Error::InvalidInput(_)), "{err:?}");
     // ... and a valid complex position goes through.
     slice_inner_rc(&field, Complex64::new(2.2, 0.2), &SliceConfig::default()).unwrap();
+}
+
+/// The cooperative interrupt hook ([`SliceConfig::interrupt`]): a probe that
+/// never fires leaves the result bitwise unchanged; a probe that fires aborts
+/// at an orchestration boundary with [`Error::Interrupted`] instead of running
+/// the whole solve.
+#[test]
+fn interrupt_hook_aborts_and_is_bitwise_neutral() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let field = test_field();
+    let omega = 30.0;
+    let plain = slice_field(&field, &SliceConfig { omega, ..Default::default() }).unwrap();
+
+    let silent = InterruptHook::new(|| false);
+    let cfg = SliceConfig { omega, interrupt: Some(silent), ..Default::default() };
+    let probed = slice_field(&field, &cfg).unwrap();
+    assert_eq!(plain.value.re.to_bits(), probed.value.re.to_bits());
+    assert_eq!(plain.value.im.to_bits(), probed.value.im.to_bits());
+    assert_eq!(plain.error.to_bits(), probed.error.to_bits());
+    assert_eq!(plain.inner_solves, probed.inner_solves);
+
+    // Fires on the second probe (the first boundary must be reached first).
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    let firing = InterruptHook::new(move || counter.fetch_add(1, Ordering::Relaxed) >= 1);
+    let cfg = SliceConfig { omega, interrupt: Some(firing), ..Default::default() };
+    let err = slice_field(&field, &cfg).unwrap_err();
+    assert!(matches!(err, Error::Interrupted), "{err:?}");
+    assert!(calls.load(Ordering::Relaxed) >= 2, "abort must come from a boundary probe");
 }

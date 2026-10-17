@@ -29,6 +29,11 @@ pub enum Error {
     /// exact integral.
     #[error("degenerate image (caustic); the geometric-optics form is invalid — use solve()")]
     DegenerateImage,
+    /// A cooperative interrupt probe ([`crate::SliceConfig::interrupt`]) fired
+    /// at an orchestration boundary: the caller asked to abort a long call.
+    /// The Python binding maps this to `KeyboardInterrupt`.
+    #[error("interrupted")]
+    Interrupted,
     #[error("invalid input: {0}")]
     InvalidInput(&'static str),
     #[error("not yet implemented: {0}")]

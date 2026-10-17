@@ -26,7 +26,7 @@
 
 use crate::error::{Error, Result};
 use crate::phase::Phase;
-use crate::slice::{SliceConfig, SliceEval, SliceFieldOutput, SliceModel, slice_field_g};
+use crate::slice::{InterruptHook, SliceConfig, SliceEval, SliceFieldOutput, SliceModel, slice_field_g};
 use nalgebra::SVector;
 use num_complex::Complex64;
 
@@ -939,7 +939,14 @@ fn free_space_2d(omega: f64) -> Complex64 {
 /// as [`lens_field_solve`] (the geometric branch's amplification estimate is
 /// scaled by the free-space factor `2 pi / omega`); `tol` bounds the returned
 /// integral error, which is the same *relative* bound on the amplification.
-pub fn lens_field_hybrid(field: &LensField, omega: f64, tol: f64) -> Result<HybridOutput> {
+/// `interrupt` is passed to the exact RC engine on the fallback branch (the
+/// geometric branch is already microseconds); see [`InterruptHook`].
+pub fn lens_field_hybrid(
+    field: &LensField,
+    omega: f64,
+    tol: f64,
+    interrupt: Option<InterruptHook>,
+) -> Result<HybridOutput> {
     let fs = free_space_2d(omega);
     if let Some(g) = lens_field_geometric_corrected(field, omega) {
         if g.error * fs.norm() <= tol {
@@ -952,7 +959,7 @@ pub fn lens_field_hybrid(field: &LensField, omega: f64, tol: f64) -> Result<Hybr
             });
         }
     }
-    let out = lens_field_solve(field, &SliceConfig { omega, ..Default::default() })?;
+    let out = lens_field_solve(field, &SliceConfig { omega, interrupt, ..Default::default() })?;
     Ok(HybridOutput {
         value: out.value,
         error: out.error,
@@ -1015,12 +1022,14 @@ pub fn point_mass_field_geometric_corrected(
 /// can no longer silently miss an image.
 /// `lenses` is a list of `(x, y, mass)`; the phase convention matches
 /// [`crate::phases::PointMassField`] and
-/// [`crate::images::geometric_amplification`].
+/// [`crate::images::geometric_amplification`].  `interrupt` is passed to the
+/// exact RC engine on the fallback branch; see [`InterruptHook`].
 pub fn point_mass_field_hybrid(
     source: [f64; 2],
     lenses: &[(f64, f64, f64)],
     omega: f64,
     tol: f64,
+    interrupt: Option<InterruptHook>,
 ) -> Result<HybridOutput> {
     let field = point_mass_equivalent(source, lenses)?;
     let fs = free_space_2d(omega);
@@ -1043,7 +1052,7 @@ pub fn point_mass_field_hybrid(
             });
         }
     }
-    let out = lens_field_solve(&field, &SliceConfig { omega, ..Default::default() })?;
+    let out = lens_field_solve(&field, &SliceConfig { omega, interrupt, ..Default::default() })?;
     Ok(HybridOutput {
         value: out.value,
         error: out.error,
@@ -1195,7 +1204,7 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        let h = point_mass_field_hybrid(src, &lenses, 2.0, 1e-3).unwrap();
+        let h = point_mass_field_hybrid(src, &lenses, 2.0, 1e-3, None).unwrap();
         assert_eq!(h.method, HybridMethod::Rc);
         let direct = crate::phases::PointMassField { beta: src, lenses: lenses.to_vec() };
         let exact =

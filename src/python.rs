@@ -5,7 +5,7 @@
 //! performance the Rust core exists for.
 
 use num_complex::Complex64;
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 use crate::images::{geometric_amplification, point_mass_field_image_data, point_mass_field_images};
@@ -22,8 +22,8 @@ use crate::lens_field::{
 use crate::rc1d::Rational1DModel;
 use crate::slice_batch::slice_field_batch_g;
 use crate::{
-    Error, FieldBatch, PolarConfig, PolarSolver, RationalPhase, SliceConfig, Solver, SolverConfig,
-    ThimbleConfig, ThimbleSolver, rc_1d_batch, slice_field, slice_field_batch,
+    Error, FieldBatch, InterruptHook, PolarConfig, PolarSolver, RationalPhase, SliceConfig, Solver,
+    SolverConfig, ThimbleConfig, ThimbleSolver, rc_1d_batch, slice_field, slice_field_batch,
     solve_point_mass_polar,
 };
 use rayon::prelude::*;
@@ -44,8 +44,20 @@ fn map_err(e: Error) -> PyErr {
         Error::InvalidInput(_) | Error::UnsupportedDimension(_) | Error::DimensionMismatch { .. } => {
             PyValueError::new_err(e.to_string())
         }
+        // The cooperative interrupt probe: a pending Python signal aborted the
+        // call at an orchestration boundary — raise what the user expects.
+        Error::Interrupted => PyKeyboardInterrupt::new_err(()),
         _ => PyRuntimeError::new_err(e.to_string()),
     }
+}
+
+/// The interrupt probe used by every long-running field-solver binding: a
+/// pending Python signal (the kernel's SIGINT) aborts the call at the next
+/// orchestration boundary.  Called only on the calling thread, which holds the
+/// GIL for the whole call, so `check_signals` runs the handler where CPython
+/// requires it (the main thread).
+fn interrupt_hook() -> InterruptHook {
+    InterruptHook::new(|| Python::with_gil(|py| py.check_signals().is_err()))
 }
 
 /// Result of a solve: the raw Fresnel integral, the normalised amplification
@@ -192,6 +204,7 @@ fn batch_cfg(
     if let Some(b) = band_ratio {
         cfg.band_ratio = b;
     }
+    cfg.interrupt = Some(interrupt_hook());
     cfg
 }
 
@@ -789,8 +802,14 @@ impl PyPointMassField {
             return Err(PyValueError::new_err("tol must be > 0"));
         }
         let out =
-            point_mass_field_hybrid(self.inner.beta, &self.inner.lenses, omega, tol)
-                .map_err(map_err)?;
+            point_mass_field_hybrid(
+                self.inner.beta,
+                &self.inner.lenses,
+                omega,
+                tol,
+                Some(interrupt_hook()),
+            )
+            .map_err(map_err)?;
         let (method, steps) = match out.method {
             HybridMethod::GeometricCorrected => ("geometric+correction", out.images),
             HybridMethod::Rc => ("slice", out.inner_solves),
@@ -911,6 +930,7 @@ impl PyPointMassField {
             "slice" | "auto" => {
                 let mut cfg = SliceConfig {
                     omega,
+                    interrupt: Some(interrupt_hook()),
                     ..SliceConfig::default()
                 };
                 if let Some(t) = tol {
@@ -1181,7 +1201,8 @@ impl PyLensField {
         if !(tol > 0.0) {
             return Err(PyValueError::new_err("tol must be > 0"));
         }
-        let out = lens_field_hybrid(&self.inner, omega, tol).map_err(map_err)?;
+        let out =
+            lens_field_hybrid(&self.inner, omega, tol, Some(interrupt_hook())).map_err(map_err)?;
         let (method, steps) = match out.method {
             HybridMethod::GeometricCorrected => ("geometric+correction", out.images),
             HybridMethod::Rc => ("slice", out.inner_solves),
@@ -1201,7 +1222,7 @@ impl PyLensField {
         if !(omega > 0.0) {
             return Err(PyValueError::new_err("omega must be > 0"));
         }
-        let mut cfg = SliceConfig { omega, ..SliceConfig::default() };
+        let mut cfg = SliceConfig { omega, interrupt: Some(interrupt_hook()), ..SliceConfig::default() };
         if let Some(t) = tol {
             cfg.tol_inner = t;
             cfg.tol_outer = t;

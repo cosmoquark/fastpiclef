@@ -29,7 +29,7 @@
 use crate::adaptive::{AdaptiveVecConfig, integrate_vec};
 use crate::error::{Error, Result};
 use crate::phases::PointMassField;
-use crate::slice::{SliceConfig, SliceEval, SliceModel};
+use crate::slice::{SliceConfig, SliceEval, SliceModel, check_interrupted};
 use num_complex::Complex64;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -195,6 +195,7 @@ pub(crate) fn slice_field_batch_g<M: SliceModel>(
     let solves = AtomicUsize::new(0);
 
     for band in &bands {
+        check_interrupted(cfg)?;
         let nw = band.len();
         let omegas: Vec<f64> = band.iter().map(|&i| batch.omegas[i]).collect();
         let omega_uniform = uniform_step(&omegas);
@@ -214,6 +215,7 @@ pub(crate) fn slice_field_batch_g<M: SliceModel>(
                 for i1s in (0..m1).step_by(c1) {
                     let i1e = (i1s + c1).min(m1);
                     let gb1 = &batch.beta1s[i1s..i1e];
+                    check_interrupted(cfg)?;
                     let (vals, errs) = run_group(
                         &zero,
                         cfg,
@@ -225,7 +227,7 @@ pub(crate) fn slice_field_batch_g<M: SliceModel>(
                         &b_vals,
                         mass_sum,
                         &solves,
-                    );
+                    )?;
                     // scatter back to the caller's layout
                     for (jj, &kj) in band[w0..w1].iter().enumerate() {
                         for ii in i0s..i0e {
@@ -251,7 +253,9 @@ pub(crate) fn slice_field_batch_g<M: SliceModel>(
 }
 
 /// One band × grid chunk: the vectorized outer RC integral on a shared
-/// contour.  Returns values/errors in the group's flat `(nw, m0, m1)` layout.
+/// contour.  Returns values/errors in the group's flat `(nw, m0, m1)` layout,
+/// or [`Error::Interrupted`] if the config's probe fired between outer legs
+/// (only ever checked on the calling thread, never inside a rayon task).
 #[allow(clippy::too_many_arguments)]
 fn run_group<M: SliceModel>(
     zero: &M,
@@ -264,7 +268,7 @@ fn run_group<M: SliceModel>(
     b_vals: &[f64],
     mass_sum: f64,
     solves: &AtomicUsize,
-) -> (Vec<Complex64>, Vec<f64>) {
+) -> Result<(Vec<Complex64>, Vec<f64>)> {
     let nw = omegas.len();
     let m0 = beta0s.len();
     let m1 = beta1s.len();
@@ -579,6 +583,7 @@ fn run_group<M: SliceModel>(
         let (lo, hi) = (win[0], win[1]);
         let rmax = (0.5 * (hi - lo)).sqrt();
         for (x0, sgn) in [(lo, 1.0), (hi, -1.0)] {
+            check_interrupted(cfg)?;
             let f = |rho: f64, vals: &mut [Complex64], errs: &mut [f64]| {
                 let off = Complex64::new(sgn * rho * rho, 0.0);
                 let (iv, ie) = inner(x0, off);
@@ -599,6 +604,7 @@ fn run_group<M: SliceModel>(
         + b1max / (l2_abs * cfg.tail_angle.cos())
         + 2.0;
     for (end_x2, sgn) in [(b2, 1.0), (a2, -1.0)] {
+        check_interrupted(cfg)?;
         let eval_outer = |s: f64, vals: &mut [Complex64], errs: &mut [f64]| {
             let off = e4 * Complex64::from(sgn * s);
             let (iv, ie) = inner(end_x2, off);
@@ -638,7 +644,7 @@ fn run_group<M: SliceModel>(
         }
     }
 
-    (total, terr)
+    Ok((total, terr))
 }
 
 #[cfg(test)]

@@ -51,8 +51,8 @@ pub use rc1d::rc_1d_batch;
 pub use roots::poly_roots;
 pub use saddles::{Saddle, find_saddles, saddles_from_polynomial, second_derivative};
 pub use slice::{
-    SliceConfig, SliceFieldOutput, X1SlicePhase, branch_point_indicator, slice_field, slice_inner,
-    slice_inner_rc, slice_inner_rc_evals,
+    InterruptHook, SliceConfig, SliceFieldOutput, X1SlicePhase, branch_point_indicator, slice_field,
+    slice_inner, slice_inner_rc, slice_inner_rc_evals,
 };
 pub use slice_batch::{FieldBatch, FieldBatchOutput, slice_field_batch};
 pub use solver::{Output, Solver, SolverConfig};
