@@ -87,6 +87,23 @@ fn grad_phi(x: [f64; 2], source: [f64; 2], lenses: &[(f64, f64, f64)]) -> [f64; 
     g
 }
 
+/// Real, symmetric Hessian of the Fermat potential at a point (without the
+/// per-star `ln` work that `fermat_and_hessian` does for the potential value).
+fn hessian_phi(x: [f64; 2], lenses: &[(f64, f64, f64)]) -> [[f64; 2]; 2] {
+    let mut h = [[1.0, 0.0], [0.0, 1.0]];
+    for &(a, b, m) in lenses {
+        let d0 = x[0] - a;
+        let d1 = x[1] - b;
+        let s = d0 * d0 + d1 * d1;
+        // Hessian of -m ln|x-z_j| = -m [ (1/s) I - (2/s^2) d d^T ].
+        h[0][0] -= m * (1.0 / s - 2.0 * d0 * d0 / (s * s));
+        h[1][1] -= m * (1.0 / s - 2.0 * d1 * d1 / (s * s));
+        h[0][1] += m * 2.0 * d0 * d1 / (s * s);
+    }
+    h[1][0] = h[0][1];
+    h
+}
+
 /// Fermat potential and its (real, symmetric) Hessian at a point.
 fn fermat_and_hessian(
     x: [f64; 2],
@@ -94,19 +111,12 @@ fn fermat_and_hessian(
     lenses: &[(f64, f64, f64)],
 ) -> (f64, [[f64; 2]; 2]) {
     let mut phi = 0.5 * ((x[0] - source[0]).powi(2) + (x[1] - source[1]).powi(2));
-    let mut h = [[1.0, 0.0], [0.0, 1.0]];
     for &(a, b, m) in lenses {
         let d0 = x[0] - a;
         let d1 = x[1] - b;
-        let s = d0 * d0 + d1 * d1;
-        phi -= 0.5 * m * s.ln();
-        // Hessian of -m ln|x-z_j| = -m [ (1/s) I - (2/s^2) d d^T ].
-        h[0][0] -= m * (1.0 / s - 2.0 * d0 * d0 / (s * s));
-        h[1][1] -= m * (1.0 / s - 2.0 * d1 * d1 / (s * s));
-        h[0][1] += m * 2.0 * d0 * d1 / (s * s);
+        phi -= 0.5 * m * (d0 * d0 + d1 * d1).ln();
     }
-    h[1][0] = h[0][1];
-    (phi, h)
+    (phi, hessian_phi(x, lenses))
 }
 
 /// Magnification $\mu = 1/\det H$ and Morse index $n \in \{0, \tfrac12, 1\}$
@@ -134,9 +144,9 @@ fn newton_image(
     lenses: &[(f64, f64, f64)],
     bound: f64,
 ) -> Option<[f64; 2]> {
+    let mut g = grad_phi(x, source, lenses);
     for _ in 0..120 {
-        let (_, h) = fermat_and_hessian(x, source, lenses);
-        let g = grad_phi(x, source, lenses);
+        let h = hessian_phi(x, lenses);
         let det = h[0][0] * h[1][1] - h[0][1] * h[1][0];
         if !det.is_finite() || det == 0.0 {
             return None;
@@ -150,7 +160,7 @@ fn newton_image(
         if !(x[0].is_finite() && x[1].is_finite()) || x[0].hypot(x[1]) > bound {
             return None;
         }
-        let g = grad_phi(x, source, lenses);
+        g = grad_phi(x, source, lenses);
         if g[0].hypot(g[1]) <= 1e-13 * (1.0 + x[0].hypot(x[1])) {
             return Some(x);
         }
@@ -296,10 +306,7 @@ pub fn point_mass_field_images(
     source: [f64; 2],
     lenses: &[(f64, f64, f64)],
 ) -> Result<Vec<[f64; 2]>> {
-    Ok(point_mass_field_image_data(source, lenses)?
-        .into_iter()
-        .map(|d| d.x)
-        .collect())
+    find_verified_images(source, lenses)
 }
 
 /// Stationary-phase (geometric-optics) amplification $F_{\rm geo}(\omega)$ —

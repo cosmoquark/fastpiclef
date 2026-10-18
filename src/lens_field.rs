@@ -487,12 +487,41 @@ pub fn lens_field_batch(
     crate::slice_batch::slice_field_batch_g(field, batch, cfg)
 }
 
+/// Real-space gradient and Hessian of the phase at a real point `x` in a
+/// single pass over `field.components` (the chain rule with `psi'` and
+/// `psi''`; matches [`hess_analytic`] at real `z` and the complex-step
+/// Hessian to machine precision).
+fn real_grad_and_hess(field: &LensField, x: [f64; 2]) -> ([f64; 2], [[f64; 2]; 2]) {
+    let mut g = [
+        field.lambda0 * x[0] - field.beta[0],
+        field.lambda2 * x[1] - field.beta[1],
+    ];
+    let mut h = [[field.lambda0, 0.0], [0.0, field.lambda2]];
+    for c in &field.components {
+        let d = [x[0] - c.x, x[1] - c.y];
+        let wc = Complex64::from(d[0] * d[0] + d[1] * d[1]);
+        let p1 = c.profile.dpsi_dw(wc).re;
+        let p2 = c.profile.dpsi_dw2(wc).re;
+        g[0] -= 2.0 * p1 * d[0];
+        g[1] -= 2.0 * p1 * d[1];
+        for a in 0..2 {
+            for b in 0..2 {
+                h[a][b] -= 4.0 * p2 * d[a] * d[b];
+                if a == b {
+                    h[a][b] -= 2.0 * p1;
+                }
+            }
+        }
+    }
+    (g, h)
+}
+
 /// Real-space geometry of a [`LensField`]: the images (solutions of the lens
 /// equation `grad phi = 0`) found by multi-start Newton, and the geometric
-/// (stationary-phase) amplification.  The Jacobian/Hessian come from
-/// complex-step derivatives of the holomorphic phase (machine-accurate, no
-/// hand algebra beyond the gradient), so the κ/γ + profile cases reuse exactly
-/// the same potential as the integral solver.
+/// (stationary-phase) amplification.  Each Newton step evaluates the gradient
+/// and Hessian in one analytic pass ([`real_grad_and_hess`], pinned against
+/// complex-step derivatives in the unit tests), so the κ/γ + profile cases
+/// reuse the exact potential of the integral solver.
 ///
 /// The start grid is dense (24x24 over the component span), deterministically
 /// golden-ratio jittered (so no start lands exactly on the critical curve or a
@@ -514,21 +543,6 @@ pub fn lens_field_images(field: &LensField) -> Vec<[f64; 2]> {
         // phi is holomorphic in each variable and real at real arguments, so
         // the real gradient is just the holomorphic derivative there.
         [gr[0].re, gr[1].re]
-    };
-    let h = 1e-8;
-    // Jacobian of the (real) gradient by complex steps (phi is holomorphic in
-    // each variable, so dF/dz = Im(F(z + i h))/h exactly to machine order).
-    let jac = |x: [f64; 2]| -> [[f64; 2]; 2] {
-        let mut out = [[0.0; 2]; 2];
-        for (j, slot) in out.iter_mut().enumerate() {
-            for k in 0..2 {
-                let mut z = [Complex64::from(x[0]), Complex64::from(x[1])];
-                z[k] += Complex64::i() * h;
-                let gr = field.gradient(&SVector::<Complex64, 2>::new(z[0], z[1]));
-                slot[k] = if j == 0 { gr[0].im } else { gr[1].im } / h;
-            }
-        }
-        out
     };
     let mut images: Vec<[f64; 2]> = Vec::new();
     let span = field
@@ -553,10 +567,9 @@ pub fn lens_field_images(field: &LensField) -> Vec<[f64; 2]> {
             ];
             let mut ok = false;
             for _ in 0..60 {
-                let gx = g(x);
-                let jx = jac(x);
+                let (gx, jx) = real_grad_and_hess(field, x);
                 let det = jx[0][0] * jx[1][1] - jx[0][1] * jx[1][0];
-                if det.abs() < 1e-14 {
+                if !det.is_finite() || det.abs() < 1e-14 {
                     break;
                 }
                 let dx = [
@@ -565,6 +578,9 @@ pub fn lens_field_images(field: &LensField) -> Vec<[f64; 2]> {
                 ];
                 x[0] -= dx[0];
                 x[1] -= dx[1];
+                if !(x[0].is_finite() && x[1].is_finite()) {
+                    break;
+                }
                 if dx[0].abs() + dx[1].abs() < 1e-13 {
                     ok = true;
                     break;
@@ -586,22 +602,6 @@ pub fn lens_field_images(field: &LensField) -> Vec<[f64; 2]> {
     images
 }
 
-/// Hessian of the real phase at a real point by complex-step second
-/// derivatives — the geometry helpers' workhorse (machine-accurate for the
-/// analytic profiles).
-fn hess_cs(field: &LensField, x: [f64; 2], h: f64) -> [[f64; 2]; 2] {
-    let mut hess = [[0.0f64; 2]; 2];
-    for (j, slot) in hess.iter_mut().enumerate() {
-        for k in 0..2 {
-            let mut z = [Complex64::from(x[0]), Complex64::from(x[1])];
-            z[k] += Complex64::i() * h;
-            let gr = field.gradient(&SVector::<Complex64, 2>::new(z[0], z[1]));
-            slot[k] = if j == 0 { gr[0].im } else { gr[1].im } / h;
-        }
-    }
-    hess
-}
-
 /// Stationary-phase (geometric-optics) amplification of a [`LensField`] —
 /// exact as `omega -> infinity` away from caustics; O(#images).
 ///
@@ -613,10 +613,10 @@ fn hess_cs(field: &LensField, x: [f64; 2], h: f64) -> [[f64; 2]; 2] {
 pub fn lens_field_geometric(field: &LensField, omega: f64) -> Complex64 {
     let mut f = Complex64::new(0.0, 0.0);
     for x in lens_field_images(field) {
-        let hess = hess_cs(field, x, 1e-8);
+        let (_, hess) = real_grad_and_hess(field, x);
         let det = hess[0][0] * hess[1][1] - hess[0][1] * hess[1][0];
         let tr = hess[0][0] + hess[1][1];
-        if det.abs() < 1e-12 {
+        if !det.is_finite() || det.abs() < 1e-12 {
             continue; // at a caustic: the asymptotic form breaks down
         }
         let mu = 1.0 / det;
@@ -792,9 +792,9 @@ struct SpImageData {
 /// numerically singular Hessian (caustic), where the asymptotic form breaks
 /// down and the caller must fall back to the exact RC engine.
 fn sp_image_data(field: &LensField, x: [f64; 2]) -> Option<SpImageData> {
-    let hess = hess_cs(field, x, 1e-8);
+    let (_, hess) = real_grad_and_hess(field, x);
     let det = hess[0][0] * hess[1][1] - hess[0][1] * hess[1][0];
-    if det.abs() < 1e-12 {
+    if !det.is_finite() || det.abs() < 1e-12 {
         return None;
     }
     let tr = hess[0][0] + hess[1][1];
@@ -1274,6 +1274,21 @@ mod tests {
     }
 
 
+    /// Complex-step Hessian oracle at a real point, used to verify the
+    /// analytic Hessian in [`sp_derivative_tensors_match_analytic_point_mass`].
+    fn hess_cs(field: &LensField, x: [f64; 2], h: f64) -> [[f64; 2]; 2] {
+        let mut hess = [[0.0f64; 2]; 2];
+        for (j, slot) in hess.iter_mut().enumerate() {
+            for k in 0..2 {
+                let mut z = [Complex64::from(x[0]), Complex64::from(x[1])];
+                z[k] += Complex64::i() * h;
+                let gr = field.gradient(&SVector::<Complex64, 2>::new(z[0], z[1]));
+                slot[k] = if j == 0 { gr[0].im } else { gr[1].im } / h;
+            }
+        }
+        hess
+    }
+
     /// P4.1: the analytic-Hessian chain rule must reproduce the complex-step
     /// Hessian at real points, and the central complex steps must reproduce
     /// the exact point-mass tensors (which `comparison/sp_correction.py`
@@ -1290,10 +1305,13 @@ mod tests {
                 let h_cs = hess_cs(&field, x, 1e-8);
                 let h_an =
                     hess_analytic(&field, [Complex64::from(x[0]), Complex64::from(x[1])]);
+                let (_, h_real) = real_grad_and_hess(&field, x);
                 for a in 0..2 {
                     for b in 0..2 {
                         let d = (h_an[a][b] - Complex64::from(h_cs[a][b])).norm();
                         assert!(d < 1e-8, "H[{a}][{b}] analytic vs complex step: {d:e}");
+                        let dr = (h_real[a][b] - h_cs[a][b]).abs();
+                        assert!(dr < 1e-8, "H[{a}][{b}] real_grad_and_hess vs complex step: {dr:e}");
                     }
                 }
                 // (b) exact tensors of phi = (x1-y)^2/2 + x2^2/2 - ln|x| at (x0, 0)
