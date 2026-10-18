@@ -101,3 +101,44 @@ fn anisotropic_quadratic() {
         1e-9,
     );
 }
+
+#[test]
+fn parallel_equals_serial_bitwise() {
+    use fast_picard_lefshetz_integral_code::{ThimbleConfig, solve_point_mass_polar};
+
+    let phase = AnisoQuad { a: 1.0, b: 2.0 };
+    let ser_cfg = PolarConfig {
+        theta_init: 8,
+        theta_max: 256,
+        parallel: false,
+        ..PolarConfig::default()
+    };
+    let par_cfg = PolarConfig {
+        parallel: true,
+        ..ser_cfg.clone()
+    };
+    let mut s_ser = PolarSolver::new(&phase, ser_cfg);
+    let mut s_par = PolarSolver::new(&phase, par_cfg);
+    let o_ser = s_ser.run().unwrap();
+    let o_par = s_par.run().unwrap();
+    assert_eq!(o_ser.value.re.to_bits(), o_par.value.re.to_bits());
+    assert_eq!(o_ser.value.im.to_bits(), o_par.value.im.to_bits());
+    assert_eq!(o_ser.error.to_bits(), o_par.error.to_bits());
+    assert_eq!(s_ser.thetas_used(), s_par.thetas_used());
+
+    let pm_ser_cfg = PolarConfig {
+        radial: ThimbleConfig { omega: 10.0, ..Default::default() },
+        parallel: false,
+        ..PolarConfig::default()
+    };
+    let pm_par_cfg = PolarConfig {
+        parallel: true,
+        ..pm_ser_cfg.clone()
+    };
+    let (pm_ser, n_ser) = solve_point_mass_polar(0.5, &pm_ser_cfg).unwrap();
+    let (pm_par, n_par) = solve_point_mass_polar(0.5, &pm_par_cfg).unwrap();
+    assert_eq!(pm_ser.value.re.to_bits(), pm_par.value.re.to_bits());
+    assert_eq!(pm_ser.value.im.to_bits(), pm_par.value.im.to_bits());
+    assert_eq!(pm_ser.error.to_bits(), pm_par.error.to_bits());
+    assert_eq!(n_ser, n_par);
+}

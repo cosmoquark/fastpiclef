@@ -23,6 +23,7 @@ use crate::thimble::{ThimbleConfig, solve_half_line};
 use crate::{Error, Output, Phase, RationalPhase2D, Result};
 use nalgebra::SVector;
 use num_complex::Complex64;
+use rayon::prelude::*;
 use std::f64::consts::TAU;
 
 /// Knobs for the polar pipeline. The frequency $\omega$ lives in
@@ -37,6 +38,8 @@ pub struct PolarConfig {
     pub theta_max: usize,
     /// Stop doubling once |F_2N - F_N| < theta_tol * |F_2N|.
     pub theta_tol: f64,
+    /// Evaluate per-angle radial solves in parallel (bitwise identical to serial).
+    pub parallel: bool,
 }
 
 impl Default for PolarConfig {
@@ -46,6 +49,7 @@ impl Default for PolarConfig {
             theta_init: 16,
             theta_max: 1024,
             theta_tol: 1e-10,
+            parallel: true,
         }
     }
 }
@@ -151,25 +155,41 @@ impl<'a> PolarSolver<'a> {
 /// previous radial solve) until the value stabilises. Shared by the generic
 /// [`PolarSolver`] and the dedicated point-mass path
 /// ([`solve_point_mass_polar`]); `eval(theta)` returns that angle's radial
-/// integral $\int_0^\infty r\,e^{i\omega\phi_\theta(r)}\,dr$. Returns the raw
-/// polar integral and the number of $\theta$ points used.
-fn integrate_theta(cfg: &PolarConfig, eval: &dyn Fn(f64) -> Result<Output>) -> Result<(Output, usize)> {
+/// integral $\int_0^\infty r\,e^{i\omega\phi_\theta(r)}\,dr$.When
+/// `cfg.parallel` is true, each doubling round's radial solves run in parallel
+/// with rayon and are collected in fixed index order before summing, so the
+/// result is bitwise identical to serial evaluation. Returns the raw polar
+/// integral and the number of $\theta$ points used.
+fn integrate_theta<F>(cfg: &PolarConfig, eval: &F) -> Result<(Output, usize)>
+where
+    F: Fn(f64) -> Result<Output> + Sync,
+{
     if cfg.theta_init < 2 {
         return Err(Error::InvalidInput("theta_init must be >= 2"));
     }
+    let eval_batch = |n: usize, shift: f64| -> Result<Vec<Output>> {
+        if cfg.parallel {
+            (0..n)
+                .into_par_iter()
+                .map(|k| eval(TAU * (k as f64 + shift) / n as f64))
+                .collect()
+        } else {
+            (0..n)
+                .map(|k| eval(TAU * (k as f64 + shift) / n as f64))
+                .collect()
+        }
+    };
     let mut n = cfg.theta_init;
     let mut sum = Complex64::new(0.0, 0.0);
     let mut radial_err_sum = 0.0;
-    for k in 0..n {
-        let out = eval(TAU * k as f64 / n as f64)?;
+    for out in eval_batch(n, 0.0)? {
         sum += out.value;
         radial_err_sum += out.error;
     }
     let mut value = sum * Complex64::from(TAU / n as f64);
     let mut delta = f64::INFINITY;
     while n < cfg.theta_max {
-        for k in 0..n {
-            let out = eval(TAU * (k as f64 + 0.5) / n as f64)?;
+        for out in eval_batch(n, 0.5)? {
             sum += out.value;
             radial_err_sum += out.error;
         }
