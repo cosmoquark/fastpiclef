@@ -42,6 +42,9 @@ impl<const D: usize> Mesh<D> {
         &self.simplices[i * v..(i + 1) * v]
     }
 
+    // `Self::VERTS_PER_SIMPLEX` depends on `D`, so `as_chunks` would require
+    // unstable `generic_const_exprs`.
+    #[allow(clippy::chunks_exact_to_as_chunks)]
     pub fn simplex_iter(&self) -> impl Iterator<Item = &[u32]> {
         self.simplices.chunks_exact(Self::VERTS_PER_SIMPLEX)
     }
@@ -165,11 +168,6 @@ impl<const D: usize> Mesh<D> {
             simplices,
             active: vec![true; num_simplices],
         })
-    }
-
-    /// Bisect every edge that exceeds `max_edge`.
-    pub fn refine(&mut self, _max_edge: f64) -> Result<()> {
-        Err(Error::NotImplemented("Mesh::refine"))
     }
 
     /// Deactivate every active simplex none of whose vertices satisfies

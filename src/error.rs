@@ -36,8 +36,6 @@ pub enum Error {
     Interrupted,
     #[error("invalid input: {0}")]
     InvalidInput(&'static str),
-    #[error("not yet implemented: {0}")]
-    NotImplemented(&'static str),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

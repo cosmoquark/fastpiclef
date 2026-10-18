@@ -190,8 +190,15 @@ fn batch_rejects_bad_input() {
     let field = two_mass();
     let good = FieldBatch { omegas: vec![1.0], beta0s: vec![0.0], beta1s: vec![0.0] };
     let cfg = SliceConfig::default();
-    // omega <= 0
+    //omega <= 0
     let bad = FieldBatch { omegas: vec![0.0], ..good.clone() };
+    assert!(slice_field_batch(&field, &bad, &cfg).is_err());
+    // empty grids (regression: previously panicked in step_by(0) / div-by-0)
+    let bad = FieldBatch { omegas: vec![], ..good.clone() };
+    assert!(slice_field_batch(&field, &bad, &cfg).is_err());
+    let bad = FieldBatch { beta0s: vec![], ..good.clone() };
+    assert!(slice_field_batch(&field, &bad, &cfg).is_err());
+    let bad = FieldBatch { beta1s: vec![], ..good.clone() };
     assert!(slice_field_batch(&field, &bad, &cfg).is_err());
     // non-finite source
     let bad = FieldBatch { beta0s: vec![f64::NAN], ..good.clone() };

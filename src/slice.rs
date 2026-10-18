@@ -19,8 +19,8 @@
 //! error budget so it can no longer report $10^{-13}$ while being 80% wrong.
 //!
 //! At a fixed $x_1 = c$ the slice phase in $z_0$ is
-//! $\phi_c(z_0) = \tfrac12(z_0-\beta_0)^2 + \tfrac12(c-\beta_1)^2
-//!  - \sum_j \tfrac{m_j}{2}\ln w_j$, with $w_j(z_0) = (z_0-a_j)^2 + (c-b_j)^2$.
+//! $\phi_c(z_0) = \tfrac12(z_0-\beta_0)^2 + \tfrac12(c-\beta_1)^2 -
+//! \sum_j \tfrac{m_j}{2}\ln w_j$, with $w_j(z_0) = (z_0-a_j)^2 + (c-b_j)^2$.
 //! Its derivative is rational, $\phi_c' = N/D$ with $D = \prod_j w_j$ and
 //! $\deg N = 2N+1$ ($N$ = number of masses), so every stationary point is a
 //! root of a single polynomial — the complete saddle source
@@ -299,10 +299,10 @@ impl Default for SliceConfig {
 /// owns the hook's state (for the Python binding: the GIL-holding caller).
 #[inline]
 pub(crate) fn check_interrupted(cfg: &SliceConfig) -> Result<()> {
-    if let Some(hook) = &cfg.interrupt {
-        if hook.0() {
-            return Err(Error::Interrupted);
-        }
+    if let Some(hook) = &cfg.interrupt
+        && hook.0()
+    {
+        return Err(Error::Interrupted);
     }
     Ok(())
 }

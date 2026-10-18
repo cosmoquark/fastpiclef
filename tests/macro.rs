@@ -51,6 +51,7 @@ fn mass_sheet_matches_nd_external() {
 }
 
 #[test]
+#[allow(clippy::type_complexity)]
 fn profiles_match_polar_referee() {
     // Single centred profiles vs the high-precision polar (Hankel) referee —
     // two independent methods (emitted 2026-10-12, dps 45).
@@ -211,9 +212,9 @@ fn geometric_limit_sharpens_with_omega() {
         let exact = lens_field_solve(&field, &SliceConfig { omega, ..Default::default() })
             .unwrap()
             .value;
-        let F_exact = exact * omega / (2.0 * std::f64::consts::PI * Complex64::i());
-        let F_geo = lens_field_geometric(&field, omega);
-        (F_exact - F_geo).norm()
+        let f_exact = exact * omega / (2.0 * std::f64::consts::PI * Complex64::i());
+        let f_geo = lens_field_geometric(&field, omega);
+        (f_exact - f_geo).norm()
     };
     let (d50, d100) = (d(50.0), d(100.0));
     assert!(d100 < d50, "geometric deviation did not shrink: {d50:.3e} -> {d100:.3e}");
@@ -257,9 +258,13 @@ fn macro_batch_saddle_types_match_scalar() {
 
 #[test]
 fn rejects_critical_and_invalid() {
-    // lambda = 0 (critical macro model) and bad profiles are rejected.
+    // lambda = 0 (critical macro model, including float-rounded critical pairs
+    // like kappa = 0.3, gamma1 = 0.7 where 1 - k - g = -1.11e-16) and
+    // near-critical |lambda| < 1e-8 are rejected, as are bad profiles.
     assert!(LensField::new([0.0, 0.0], 1.0, 0.0, 0.0, vec![]).is_err());
     assert!(LensField::new([0.0, 0.0], 0.5, 0.5, 0.0, vec![]).is_err());
+    assert!(LensField::new([0.4, -0.3], 0.3, 0.7, 0.0, vec![]).is_err());
+    assert!(LensField::new([0.4, -0.3], 1.0 - 1e-10, 0.0, 0.0, vec![]).is_err());
     assert!(
         LensField::new([0.0, 0.0], 0.3, 0.0, 0.0, vec![point(f64::NAN, 0.0, 1.0)]).is_err()
     );

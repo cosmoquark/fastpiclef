@@ -428,6 +428,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::type_complexity)]
     fn vec_matches_scalar_for_one_component_bitwise() {
         // The refactor guard: integrate_vec with a single component and floor
         // must reproduce `integrate` bit for bit (values, errors, evals).

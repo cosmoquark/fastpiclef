@@ -1,15 +1,32 @@
-//! Fast Picard-Lefshetz Fresnel-integral solver.
+//! Fast Picard-Lefschetz and Cauchy-contour Fresnel-integral solver for
+//! wave-optics gravitational lensing.
 //!
-//! Pipeline: a real rectangular simplicial mesh ([`Mesh::rectangular`]) is
-//! sunk towards the Lefshetz thimbles by the descent flow of
-//! $h = -\mathrm{Im}\,\phi$ ([`Rk4`]), pruning simplices whose integrand has
-//! become negligible, and the resulting complex simplicial chain is
-//! integrated with Grundmann-Möller quadrature ([`GrundmannMoeller`]).
-//!
-//! The crate is generic in the integration dimension via `const D: usize`.
-//! Callers who know the dimension at compile time should reach for
-//! [`Solver`] directly; callers with a runtime dimension can use [`solve`],
-//! which dispatches through a `seq-macro`-generated match.
+//! Solver map:
+//! - **2D exact RC slice engine** ([`slice_field`], [`lens_field_solve`]) —
+//!   Cartesian-slice reduction with a breakpoint-anchored real core and
+//!   $\pi/4$-rotated Gaussian tails in both variables, for point-mass fields
+//!   ([`phases::PointMassField`]) and the general macro ($\kappa, \gamma$) +
+//!   axisymmetric star/halo profile model ([`LensField`]).  Exact by Cauchy
+//!   with no branch-point sweeping.
+//! - **Shared-contour batching** ([`slice_field_batch`], [`lens_field_batch`],
+//!   [`rc_1d_batch`]) — one contour serves a tensor source grid and/or
+//!   frequency band via [`adaptive::integrate_vec`].
+//! - **High-$\omega$ stationary-phase hybrid** ([`lens_field_hybrid`],
+//!   [`point_mass_field_hybrid`]) — geometric optics plus the validated
+//!   $O(1/\omega)$ correction ([`lens_field_geometric_corrected`],
+//!   [`point_mass_field_geometric_corrected`]) when its conservative budget
+//!   fits `tol`, falling back to the exact RC engine otherwise.
+//! - **1D constant-phase contour solver** ([`ThimbleSolver`],
+//!   [`solve_1d_hybrid`]) — traces steepest-descent level curves directly from
+//!   the saddles (complete polynomial root source for [`RationalPhase`]).
+//! - **Axisymmetric 2D fast paths** ([`PolarSolver`],
+//!   [`solve_point_mass_polar`], and the $\mu$s-class Nakamura-Deguchi closed
+//!   form [`point_mass_nd`]).
+//! - **General-dimension mesh-flow solver** ([`Solver`]`<D>`, [`solve`]) — a
+//!   real rectangular simplicial mesh ([`Mesh::rectangular`]) is sunk towards
+//!   the Lefschetz thimbles by the descent flow of $h = -\mathrm{Im}\,\phi$
+//!   ([`Rk4`]), pruning negligible simplices, and integrated with
+//!   Grundmann-Möller quadrature ([`GrundmannMoeller`]).
 
 pub mod adaptive;
 pub mod error;

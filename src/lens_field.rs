@@ -192,9 +192,14 @@ impl LensField {
         let rot = |x: f64, y: f64| (ct * x + st * y, -st * x + ct * y);
         let lambda0 = 1.0 - kappa - gamma;
         let lambda2 = 1.0 - kappa + gamma;
-        if lambda0 == 0.0 || lambda2 == 0.0 {
+        // Reject exact and near-critical macro models (including float-rounded
+        // critical pairs like kappa = 0.3, gamma1 = 0.7 where 1 - k - g is
+        // ~1e-16): the Gaussian centres beta/lambda and the tail length scale
+        // like 1/|lambda| and degenerate as lambda -> 0.
+        const CRITICAL_LAMBDA_FLOOR: f64 = 1e-8;
+        if lambda0.abs() < CRITICAL_LAMBDA_FLOOR || lambda2.abs() < CRITICAL_LAMBDA_FLOOR {
             return Err(Error::InvalidInput(
-                "critical macro model: lambda0 or lambda2 = 0 is rejected",
+                "critical or near-critical macro model: |lambda0| and |lambda2| must be >= 1e-8",
             ));
         }
         let (b0, b1) = rot(beta[0], beta[1]);
@@ -599,6 +604,12 @@ fn hess_cs(field: &LensField, x: [f64; 2], h: f64) -> [[f64; 2]; 2] {
 
 /// Stationary-phase (geometric-optics) amplification of a [`LensField`] —
 /// exact as `omega -> infinity` away from caustics; O(#images).
+///
+/// Images come from [`lens_field_images`] (residual-verified multi-start
+/// Newton, not completeness-certified for arbitrary fields) and degenerate
+/// images (`|det H| < 1e-12`, caustics) are skipped; for point-mass-only
+/// fields [`crate::images::geometric_amplification`] uses the
+/// certificate-checked finder and reports caustics explicitly.
 pub fn lens_field_geometric(field: &LensField, omega: f64) -> Complex64 {
     let mut f = Complex64::new(0.0, 0.0);
     for x in lens_field_images(field) {
@@ -712,9 +723,9 @@ fn phi4_cs(field: &LensField, x: [f64; 2], h: f64) -> [[[[f64; 2]; 2]; 2]; 2] {
                     }
                 }
             }
-            for a in 0..2 {
-                for b in 0..2 {
-                    out[a][b][c][d] = out_cd[a][b];
+            for (a, row_out) in out.iter_mut().enumerate() {
+                for (b, slot) in row_out.iter_mut().enumerate() {
+                    slot[c][d] = out_cd[a][b];
                 }
             }
         }
@@ -948,16 +959,16 @@ pub fn lens_field_hybrid(
     interrupt: Option<InterruptHook>,
 ) -> Result<HybridOutput> {
     let fs = free_space_2d(omega);
-    if let Some(g) = lens_field_geometric_corrected(field, omega) {
-        if g.error * fs.norm() <= tol {
-            return Ok(HybridOutput {
-                value: g.value * fs,
-                error: g.error * fs.norm(),
-                method: HybridMethod::GeometricCorrected,
-                images: g.images,
-                inner_solves: 0,
-            });
-        }
+    if let Some(g) = lens_field_geometric_corrected(field, omega)
+        && g.error * fs.norm() <= tol
+    {
+        return Ok(HybridOutput {
+            value: g.value * fs,
+            error: g.error * fs.norm(),
+            method: HybridMethod::GeometricCorrected,
+            images: g.images,
+            inner_solves: 0,
+        });
     }
     let out = lens_field_solve(field, &SliceConfig { omega, interrupt, ..Default::default() })?;
     Ok(HybridOutput {
@@ -1037,20 +1048,17 @@ pub fn point_mass_field_hybrid(
     // (caustic) or certificate-failed set falls through to the exact RC
     // engine below — caustics are its home turf — so any finder error maps to
     // the empty set (= no geometric branch) rather than propagating.
-    let images = match crate::images::point_mass_field_images(source, lenses) {
-        Ok(images) => images,
-        Err(_) => Vec::new(),
-    };
-    if let Some((value, error)) = sp_corrected_sum(&field, &images, omega) {
-        if error * fs.norm() <= tol {
-            return Ok(HybridOutput {
-                value: value * fs,
-                error: error * fs.norm(),
-                method: HybridMethod::GeometricCorrected,
-                images: images.len(),
-                inner_solves: 0,
-            });
-        }
+    let images = crate::images::point_mass_field_images(source, lenses).unwrap_or_default();
+    if let Some((value, error)) = sp_corrected_sum(&field, &images, omega)
+        && error * fs.norm() <= tol
+    {
+        return Ok(HybridOutput {
+            value: value * fs,
+            error: error * fs.norm(),
+            method: HybridMethod::GeometricCorrected,
+            images: images.len(),
+            inner_solves: 0,
+        });
     }
     let out = lens_field_solve(&field, &SliceConfig { omega, interrupt, ..Default::default() })?;
     Ok(HybridOutput {
@@ -1123,6 +1131,7 @@ mod tests {
     /// Profile potentials on the real axis against the closed forms
     /// (FIONA/GLoW normalisation).
     #[test]
+    #[allow(clippy::type_complexity)]
     fn profile_values_real_axis() {
         let cases: Vec<(Profile, Box<dyn Fn(f64) -> f64>)> = vec![
             (Profile::Point { mass: 0.7, xc: 0.2 }, Box::new(|r| 0.5 * 0.7 * (r * r + 0.04).ln())),
@@ -1310,10 +1319,10 @@ mod tests {
                     }
                 }
                 let got4 = phi4_cs(&field, x, 3e-5);
-                for a in 0..2 {
-                    for b in 0..2 {
-                        for c in 0..2 {
-                            for d in 0..2 {
+                for (a, g_a) in got4.iter().enumerate() {
+                    for (b, g_ab) in g_a.iter().enumerate() {
+                        for (c, g_abc) in g_ab.iter().enumerate() {
+                            for (d, &got_val) in g_abc.iter().enumerate() {
                                 let want = if (a + b + c + d) % 2 == 1 {
                                     0.0 // odd in x2: the phase is even in x2
                                 } else if (a, b, c, d) == (0, 0, 0, 0)
@@ -1323,14 +1332,13 @@ mod tests {
                                 } else {
                                     -6.0 / x4
                                 };
-                                let err = (got4[a][b][c][d] - want).abs();
+                                let err = (got_val - want).abs();
                                 // scale-aware: the stencil's truncation grows
                                 // with the higher derivatives near the centre
                                 assert!(
                                     err < 1e-5 * want.abs().max(1.0),
                                     "phi4[{a}][{b}][{c}][{d}] at x={x0}: {err:e} \
-                                     (want {want:e}, got {:e})",
-                                    got4[a][b][c][d]
+                                     (want {want:e}, got {got_val:e})",
                                 );
                             }
                         }

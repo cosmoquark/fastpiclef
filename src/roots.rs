@@ -110,9 +110,9 @@ pub fn poly_roots(coeffs: &[Complex64]) -> Result<Vec<Complex64>> {
         for k in 0..n {
             let zk = roots[k];
             let mut denom = Complex64::new(1.0, 0.0);
-            for j in 0..n {
+            for (j, &rj) in roots.iter().enumerate() {
                 if j != k {
-                    denom *= zk - roots[j];
+                    denom *= zk - rj;
                 }
             }
             if denom.norm() == 0.0 {

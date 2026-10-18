@@ -4,9 +4,9 @@
 //! the standard Fermat-potential reference convention, but |F| is unambiguous.
 //!
 //! Reference |F| values generated 2026-07-23 with mpmath (Takahashi & Nakamura
-//! 2003): F = exp[pi w/4 + i(w/2)(ln(w/2) - 2 phi_m)] * Gamma(1 - i w/2)
-//! * 1F1(i w/2, 1; i w y^2/2), with x_m = (y + sqrt(y^2+4))/2 and
-//! phi_m = (x_m - y)^2/2 - ln(x_m). See comparison/referee.py::point_mass_exact.
+//! 2003): F = exp[pi w/4 + i(w/2)(ln(w/2) - 2 phi_m)] * Gamma(1 - i w/2) *
+//! 1F1(i w/2, 1; i w y^2/2), with x_m = (y + sqrt(y^2+4))/2 and phi_m =
+//! (x_m - y)^2/2 - ln(x_m). See comparison/referee.py::point_mass_exact.
 
 use fast_picard_lefshetz_integral_code::{PolarConfig, ThimbleConfig, solve_point_mass_polar};
 use std::f64::consts::PI;

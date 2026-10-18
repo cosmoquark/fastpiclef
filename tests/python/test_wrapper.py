@@ -79,6 +79,19 @@ def test_errors():
             pass
         else:
             raise AssertionError(f"expected ValueError for {bad}")
+    f = fpl.PointMassField([(0.0, 0.0, 1.0)], beta=(0.5, 0.0))
+    for call in [
+        lambda: f.sweep([]),
+        lambda: f.map([], [0.0], omega=1.0),
+        lambda: f.map([0.0], [], omega=1.0),
+        lambda: fpl.LensField([], kappa=0.3, gamma1=0.7),
+    ]:
+        try:
+            call()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("expected ValueError for bad batch/critical input")
 
 
 def test_point_mass_field_free_limit():

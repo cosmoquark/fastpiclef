@@ -2,10 +2,9 @@
 //! of point masses (Path 2, milestones M1 + M2; the M1 finder was reworked on
 //! 2026-10-17 — see below).
 //!
-//! Fermat potential $\phi(\mathbf x) = \tfrac12|\mathbf x - \mathbf\beta|^2
-//! - \sum_j m_j \ln|\mathbf x - \mathbf z_j|$; the image condition
-//! $\nabla\phi = 0$ is
-//! $\mathbf x = \mathbf\beta + \sum_j m_j\,(\mathbf x - \mathbf z_j)/
+//! Fermat potential $\phi(\mathbf x) = \tfrac12|\mathbf x - \mathbf\beta|^2 -
+//! \sum_j m_j \ln|\mathbf x - \mathbf z_j|$; the image condition $\nabla\phi =
+//! 0$ is $\mathbf x = \mathbf\beta + \sum_j m_j\,(\mathbf x - \mathbf z_j)/
 //! |\mathbf x - \mathbf z_j|^2$.  At high frequency the amplification is the
 //! stationary-phase sum over images,
 //! $F_{\rm geo}(\omega) = \sum_i |\mu_i|^{1/2}\exp(i\omega\phi_i - i\pi n_i)$,

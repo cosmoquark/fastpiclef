@@ -103,7 +103,8 @@ pub trait RationalPhase: Phase<1> {
     fn stationary_polynomial(&self) -> Vec<Complex64>;
 
     /// Poles of $\phi$ (zeros of $D$). Default: none (polynomial phases).
-    /// Consumed by the (planned) mesh near-pole guard and diagnostics.
+    /// Consumed by the 1D batched RC contour builder ([`crate::rc1d::rc_1d_batch`])
+    /// and diagnostics.
     fn poles(&self) -> Vec<Complex64> {
         Vec::new()
     }

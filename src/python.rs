@@ -1147,12 +1147,20 @@ impl PyLensField {
     }
 
     /// The geometric-optics images (real solutions of the lens equation).
+    ///
+    /// Found by a dense, residual-verified multi-start Newton grid (not
+    /// completeness-certified for arbitrary fields; for point-mass-only fields
+    /// `PointMassField.images()` enforces a completeness certificate).
     fn images(&self) -> Vec<(f64, f64)> {
         lens_field_images(&self.inner).into_iter().map(|p| (p[0], p[1])).collect()
     }
 
     /// Stationary-phase (geometric-optics) amplification; exact as omega -> oo
     /// away from caustics.  `.error` is 0 (an asymptotic form, not quadrature).
+    /// Uses `LensField.images()` (not completeness-certified) and skips
+    /// degenerate (`|det H| < 1e-12`) images; for point-mass-only fields
+    /// `PointMassField.geometric` uses the certificate-checked finder and
+    /// raises on caustics.
     fn geometric(&self, omega: f64) -> PyResult<PyOutput> {
         if !(omega > 0.0) {
             return Err(PyValueError::new_err("omega must be > 0"));
@@ -1167,7 +1175,9 @@ impl PyLensField {
     /// `sum_j |G0_j| |C_j| / w` reported in `.error` (integral units — the same
     /// relative bound on the amplification).  `None` (Python `None`) at a
     /// caustic, where the asymptotic form is invalid; use `hybrid` or `solve`
-    /// there.
+    /// there.  Images come from `LensField.images()` (residual-verified, not
+    /// completeness-certified; for point-mass-only fields use
+    /// `PointMassField.geometric_corrected`).
     fn geometric_corrected(&self, omega: f64) -> PyResult<Option<PyOutput>> {
         if !(omega > 0.0) {
             return Err(PyValueError::new_err("omega must be > 0"));
@@ -1188,11 +1198,15 @@ impl PyLensField {
     /// stationary-phase correction when its conservative estimate is within
     /// `tol` (in integral units), and the exact RC engine otherwise.
     /// `.method` is `'geometric+correction'` or `'slice'`.  The switch is
-    /// honest: on the geometric branch the true error is at most `tol` (the
-    /// estimate was measured to cover the corrected residual by >= 3.5x in
-    /// every measured family, and the reported budget carries a further
-    /// factor 3, so `tol` bounds the true error on the geometric branch.  The default `tol = 1e-9` stays on the exact RC;
-    /// raise it (e.g. `1e-3`) to unlock the fast branch at high omega.
+    /// honest for the located images: on the geometric branch the asymptotic
+    /// error is at most `tol` (the estimate was measured to cover the
+    /// corrected residual by >= 3.5x in every measured family, and the
+    /// reported budget carries a further factor 3; the general multi-start
+    /// Newton finder is residual-verified but not completeness-certified —
+    /// for point-mass-only fields `PointMassField.hybrid` uses the
+    /// certificate-checked finder).  The default `tol = 1e-9` stays on the
+    /// exact RC; raise it (e.g. `1e-3`) to unlock the fast branch at high
+    /// omega.
     #[pyo3(signature = (omega, tol = 1e-9))]
     fn hybrid(&self, omega: f64, tol: f64) -> PyResult<PyOutput> {
         if !(omega > 0.0) {

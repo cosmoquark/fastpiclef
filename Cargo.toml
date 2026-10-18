@@ -24,3 +24,9 @@ python = ["dep:pyo3"]
 [dev-dependencies]
 approx = "0.5"
 criterion = "0.5"
+
+[lints.clippy]
+# 17-significant-digit reference literals are deliberate (AGENTS.md validation discipline).
+excessive_precision = "allow"
+# `!(x > 0.0)` is the NaN-safe positive-check idiom used at every input boundary.
+neg_cmp_op_on_partial_ord = "allow"

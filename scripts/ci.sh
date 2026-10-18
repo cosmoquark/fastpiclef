@@ -17,6 +17,9 @@ cd "$(dirname "$0")/.."
 MODE="${1:-full}"
 step() { printf '\n=== %s ===\n' "$*"; }
 
+step "cargo clippy --release --all-targets -- -D warnings"
+cargo clippy --release --all-targets -- -D warnings
+
 step "cargo build --release --examples"
 cargo build --release --examples
 

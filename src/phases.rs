@@ -328,14 +328,14 @@ impl RationalPhase for SimGLens {
 /// / stellar-field problem.
 ///
 /// The Fermat phase is the holomorphic continuation of
-/// $\phi(\mathbf{x}) = \tfrac12 |\mathbf{x} - \boldsymbol\beta|^2
-///   - \sum_j m_j \ln|\mathbf{x} - \mathbf{x}_j|$
-/// (each point mass $j$ contributes a logarithmic lensing potential, with
-/// $m_j$ its mass in Einstein-radius$^2$ units), obtained by writing
-/// $|\mathbf{x} - \mathbf{x}_j|^2$ as the *holomorphic* quadratic form
-/// $w_j = (z_0 - a_j)^2 + (z_1 - b_j)^2$ and $\ln|\cdot| = \tfrac12 \ln w_j$:
-/// $$ \phi(\mathbf{z}) = \tfrac12\big[(z_0-\beta_0)^2 + (z_1-\beta_1)^2\big]
-///    - \sum_j \tfrac{m_j}{2}\,\ln w_j. $$
+/// $\phi(\mathbf{x}) = \tfrac12 |\mathbf{x} - \boldsymbol\beta|^2 - \sum_j m_j
+/// \ln|\mathbf{x} - \mathbf{x}_j|$ (each point mass $j$ contributes a
+/// logarithmic lensing potential, with $m_j$ its mass in Einstein-radius$^2$
+/// units), obtained by writing $|\mathbf{x} - \mathbf{x}_j|^2$ as the
+/// *holomorphic* quadratic form $w_j = (z_0 - a_j)^2 + (z_1 - b_j)^2$ and
+/// $\ln|\cdot| = \tfrac12 \ln w_j$:
+/// $$ \phi(\mathbf{z}) = \tfrac12\big[(z_0-\beta_0)^2 + (z_1-\beta_1)^2\big] -
+///    \sum_j \tfrac{m_j}{2}\,\ln w_j. $$
 ///
 /// The field is generally **not axisymmetric**, so only the general
 /// mesh-flow [`crate::Solver`]`<2>` applies — the polar wrapper does not.

@@ -18,24 +18,24 @@
 
 use crate::adaptive::{AdaptiveVecConfig, integrate_vec};
 use crate::error::{Error, Result};
-use crate::phase::Phase;
+use crate::phase::RationalPhase;
 use crate::phases::{CustomRationalLens, RationalLens, SimGLens};
-use crate::roots::{poly_eval, poly_roots};
+use crate::roots::poly_eval;
 use crate::slice::SliceConfig;
 use crate::slice_batch::{fill_series, uniform_step};
 use nalgebra::SVector;
 use num_complex::Complex64;
 
 /// Internal extension point of the 1D batched kernel: a rational lens phase
-/// `1/2 (z - beta)^2 - pot(z)` whose poles and asymptotic behaviour are known.
-pub(crate) trait Rational1DModel: Phase<1> + Sync {
+/// `1/2 (z - beta)^2 - pot(z)` whose poles (via [`RationalPhase::poles`]) and
+/// asymptotic behaviour are known.
+pub(crate) trait Rational1DModel: RationalPhase + Sync {
     fn beta(&self) -> f64;
     /// Same lens at a different source position (the per-point thimble grid).
     #[allow(dead_code)] // used by the Python bindings (feature-gated)
     fn with_beta(&self, beta: f64) -> Self
     where
         Self: Sized;
-    fn poles(&self) -> Vec<Complex64>;
     /// `deg A <= deg B`: the quadratic leads at infinity and the tails decay.
     fn bounded_at_infinity(&self) -> bool;
     /// `1/2 z^2 - pot(z)` (the beta-independent part of the phase), recovered
@@ -53,9 +53,6 @@ impl Rational1DModel for RationalLens {
     fn with_beta(&self, beta: f64) -> Self {
         RationalLens { beta, kappa: self.kappa }
     }
-    fn poles(&self) -> Vec<Complex64> {
-        vec![Complex64::i(), -Complex64::i()]
-    }
     fn bounded_at_infinity(&self) -> bool {
         true
     }
@@ -71,13 +68,6 @@ impl Rational1DModel for CustomRationalLens {
             kappa: self.kappa,
             num: self.num.clone(),
             den: self.den.clone(),
-        }
-    }
-    fn poles(&self) -> Vec<Complex64> {
-        if self.den.len() <= 1 {
-            Vec::new()
-        } else {
-            poly_roots(&self.den).unwrap_or_default()
         }
     }
     fn bounded_at_infinity(&self) -> bool {
@@ -103,18 +93,6 @@ impl Rational1DModel for SimGLens {
     }
     fn with_beta(&self, beta: f64) -> Self {
         SimGLens { beta, kappa: self.kappa, kmax: self.kmax }
-    }
-    fn poles(&self) -> Vec<Complex64> {
-        // poles of kappa / P(z), P(z) = sum_k z^{2k}/k!
-        let mut coeffs = vec![Complex64::new(0.0, 0.0); 2 * self.kmax as usize + 1];
-        let mut fact = 1.0f64;
-        for k in 0..=self.kmax as usize {
-            if k > 0 {
-                fact *= k as f64;
-            }
-            coeffs[2 * k] = Complex64::from(1.0 / fact);
-        }
-        poly_roots(&coeffs).unwrap_or_default()
     }
     fn bounded_at_infinity(&self) -> bool {
         true

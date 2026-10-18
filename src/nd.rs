@@ -54,7 +54,7 @@ fn ln_gamma(z: Complex64) -> Complex64 {
     let mut p = 1.0 / z;
     for &c in C.iter() {
         s += c * p;
-        p = p * zinv2;
+        p *= zinv2;
     }
     s + acc
 }

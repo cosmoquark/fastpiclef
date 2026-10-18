@@ -147,6 +147,12 @@ pub(crate) fn slice_field_batch_g<M: SliceModel>(
     cfg: &SliceConfig,
 ) -> Result<FieldBatchOutput> {
     // ---- validation (mirrors `slice::slice_field_g`) ----
+    if batch.omegas.is_empty() {
+        return Err(Error::InvalidInput("empty frequency grid"));
+    }
+    if batch.beta0s.is_empty() || batch.beta1s.is_empty() {
+        return Err(Error::InvalidInput("empty source grid"));
+    }
     for &w in &batch.omegas {
         if !(w > 0.0) || !w.is_finite() {
             return Err(Error::InvalidInput("omega must be > 0 and finite"));
@@ -208,7 +214,6 @@ pub(crate) fn slice_field_batch_g<M: SliceModel>(
         for w0 in (0..nw).step_by(cw) {
             let w1 = (w0 + cw).min(nw);
             let gomegas = &omegas[w0..w1];
-            let guniform = if omega_uniform.is_some() { omega_uniform } else { None };
             for i0s in (0..m0).step_by(c0) {
                 let i0e = (i0s + c0).min(m0);
                 let gb0 = &batch.beta0s[i0s..i0e];
@@ -220,7 +225,7 @@ pub(crate) fn slice_field_batch_g<M: SliceModel>(
                         &zero,
                         cfg,
                         gomegas,
-                        guniform,
+                        omega_uniform,
                         gb0,
                         &a_vals,
                         gb1,
