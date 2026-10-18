@@ -426,6 +426,7 @@ fn run_group<M: SliceModel>(
             floors: floors.clone(),
             min_len: 1e-15,
             max_panels: 200_000,
+            gl10_probe: cfg.gl10_probe,
         };
         for win in pts.windows(2) {
             let (lo, hi) = (win[0], win[1]);
@@ -450,6 +451,7 @@ fn run_group<M: SliceModel>(
             floors,
             min_len: 1e-14,
             max_panels: 200_000,
+            gl10_probe: cfg.gl10_probe,
         };
         let mut t_end = (2.0 * 45.0 / (wmin * l_abs)).sqrt()
             + b0max / (l_abs * cfg.tail_angle.cos())
@@ -611,6 +613,7 @@ fn run_group<M: SliceModel>(
         floors,
         min_len: 1e-12,
         max_panels: 200_000,
+        gl10_probe: cfg.gl10_probe,
     };
     for win in pts.windows(2) {
         let (lo, hi) = (win[0], win[1]);

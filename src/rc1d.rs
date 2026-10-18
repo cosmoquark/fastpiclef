@@ -114,6 +114,30 @@ pub fn rc_1d_batch<M: Rational1DModel>(
     omega: f64,
     cfg: &SliceConfig,
 ) -> Result<(Vec<Complex64>, Vec<f64>)> {
+    let (values, errors, _) = rc_1d_batch_g(lens, betas, omega, cfg)?;
+    Ok((values, errors))
+}
+
+/// [`rc_1d_batch`] with the quadrature node-evaluation count (the
+/// `integrate_vec` nodes; diagnostics/benchmarks — the tail-probe samples are
+/// not counted).
+#[allow(private_bounds)]
+pub fn rc_1d_batch_evals<M: Rational1DModel>(
+    lens: &M,
+    betas: &[f64],
+    omega: f64,
+    cfg: &SliceConfig,
+) -> Result<(Vec<Complex64>, Vec<f64>, usize)> {
+    rc_1d_batch_g(lens, betas, omega, cfg)
+}
+
+#[allow(private_bounds)]
+fn rc_1d_batch_g<M: Rational1DModel>(
+    lens: &M,
+    betas: &[f64],
+    omega: f64,
+    cfg: &SliceConfig,
+) -> Result<(Vec<Complex64>, Vec<f64>, usize)> {
     if !(omega > 0.0) || !omega.is_finite() {
         return Err(Error::InvalidInput("omega must be > 0 and finite"));
     }
@@ -216,15 +240,18 @@ pub fn rc_1d_batch<M: Rational1DModel>(
         floors: floors.clone(),
         min_len: 1e-15,
         max_panels: 200_000,
+        gl10_probe: cfg.gl10_probe,
     };
     let tail_cfg = AdaptiveVecConfig {
         tol: cfg.tol_inner,
         floors,
         min_len: 1e-14,
         max_panels: 200_000,
+        gl10_probe: cfg.gl10_probe,
     };
     let mut total = vec![Complex64::new(0.0, 0.0); m];
     let mut terr = vec![0.0f64; m];
+    let mut evals = 0usize;
 
     for win in pts.windows(2) {
         let (lo, hi) = (win[0], win[1]);
@@ -234,6 +261,7 @@ pub fn rc_1d_batch<M: Rational1DModel>(
                 eval(Complex64::from(x0 + sgn * t), one, vals, errs)
             };
             let res = integrate_vec(&f, 0.0, half, &core_cfg, cfg.parallel);
+            evals += res.evals;
             for k in 0..m {
                 total[k] += res.values[k];
                 terr[k] += res.errors[k];
@@ -268,6 +296,7 @@ pub fn rc_1d_batch<M: Rational1DModel>(
             t_end *= 2.0;
         }
         let res = integrate_vec(&eval_tail, 0.0, t_end, &tail_cfg, cfg.parallel);
+        evals += res.evals;
         let mut end_vals = vec![Complex64::new(0.0, 0.0); m];
         let mut end_errs = vec![0.0f64; m];
         eval_tail(t_end, &mut end_vals, &mut end_errs);
@@ -279,7 +308,7 @@ pub fn rc_1d_batch<M: Rational1DModel>(
         }
     }
 
-    Ok((total, terr))
+    Ok((total, terr, evals))
 }
 
 /// Batched frequency sweep `int_R e^{i omega_j phi} dz` for a rational lens
@@ -441,12 +470,14 @@ fn run_band<M: Rational1DModel>(
         floors: floors.clone(),
         min_len: 1e-15,
         max_panels: 200_000,
+        gl10_probe: cfg.gl10_probe,
     };
     let tail_cfg = AdaptiveVecConfig {
         tol: cfg.tol_inner,
         floors,
         min_len: 1e-14,
         max_panels: 200_000,
+        gl10_probe: cfg.gl10_probe,
     };
     let mut total = vec![Complex64::new(0.0, 0.0); m];
     let mut terr = vec![0.0f64; m];

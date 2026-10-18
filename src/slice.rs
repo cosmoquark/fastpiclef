@@ -282,6 +282,14 @@ pub struct SliceConfig {
     /// ([`slice_field`], [`crate::lens_field::lens_field_solve`] and the
     /// Python `solve`); the batched paths reject it.
     pub subtract_free: bool,
+    /// Acceptance-probe strategy of the adaptive integrators (the item-6
+    /// experiment, **measured no-go** — `comparison/results/acceptance_probe.md`):
+    /// compare a panel's GL10 halves against the GL20 whole and accept the
+    /// GL20 value on agreement (40 nodes per accepted panel instead of 60;
+    /// rejected panels cost 80).  The weaker probe proxy inflates the
+    /// refinement tree, cancelling the saving; kept to reproduce the
+    /// measurement.  Default `false` (the classic rule).
+    pub gl10_probe: bool,
     /// Cooperative interrupt probe, checked at orchestration boundaries only
     /// (between task rounds / bands / outer-contour legs, on the calling
     /// thread).  `None` (default) never probes; see [`InterruptHook`].
@@ -300,6 +308,7 @@ impl Default for SliceConfig {
             tail_angle: std::f64::consts::FRAC_PI_4,
             band_ratio: 10.0,
             subtract_free: false,
+            gl10_probe: false,
             interrupt: None,
         }
     }
@@ -667,12 +676,14 @@ fn inner_rc_unchecked<M: SliceModel>(
         floor,
         min_len: 1e-15,
         max_panels: 200_000,
+        gl10_probe: cfg.gl10_probe,
     };
     let tail_cfg = AdaptiveConfig {
         tol: cfg.tol_inner,
         floor,
         min_len: 1e-14,
         max_panels: 200_000,
+        gl10_probe: cfg.gl10_probe,
     };
 
     let mut value = Complex64::new(0.0, 0.0);
@@ -864,6 +875,7 @@ pub(crate) fn slice_field_g<M: SliceModel>(field: &M, cfg: &SliceConfig) -> Resu
         floor,
         min_len: 1e-12,
         max_panels: 200_000,
+        gl10_probe: cfg.gl10_probe,
     };
     let solves = AtomicUsize::new(0);
 

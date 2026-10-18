@@ -24,6 +24,9 @@ use rayon::prelude::*;
 use std::sync::OnceLock;
 
 const GL_N: usize = 20;
+/// Node count of the acceptance-probe rule (variant A of the acceptance
+/// experiment: GL10 halves against the GL20 whole).
+const GL10_N: usize = 10;
 
 fn legendre_pair(n: usize, z: f64) -> (f64, f64) {
     // (P_n(z), P_n'(z)) by the three-term recurrence.
@@ -38,30 +41,38 @@ fn legendre_pair(n: usize, z: f64) -> (f64, f64) {
     (p1, dp)
 }
 
-/// Gauss-Legendre nodes/weights on `[-1, 1]` (Newton from the Chebyshev-like
-/// initial guesses), computed once. Exactness is unit-tested on monomials.
+/// Gauss-Legendre nodes/weights on `[-1, 1]` for `n` points (Newton from the
+/// Chebyshev-like initial guesses). Exactness is unit-tested on monomials.
+fn build_rule(n: usize) -> (Vec<f64>, Vec<f64>) {
+    let mut x = vec![0.0; n];
+    let mut w = vec![0.0; n];
+    for i in 0..n {
+        let mut z = (std::f64::consts::PI * (i as f64 + 0.75) / (n as f64 + 0.5)).cos();
+        loop {
+            let (p, dp) = legendre_pair(n, z);
+            let dz = p / dp;
+            z -= dz;
+            if dz.abs() < 1e-16 {
+                break;
+            }
+        }
+        let (_, dp) = legendre_pair(n, z);
+        x[i] = z;
+        w[i] = 2.0 / ((1.0 - z * z) * dp * dp);
+    }
+    (x, w)
+}
+
+/// The 20-node rule (the workhorse), computed once.
 fn gl_rule() -> &'static (Vec<f64>, Vec<f64>) {
     static RULE: OnceLock<(Vec<f64>, Vec<f64>)> = OnceLock::new();
-    RULE.get_or_init(|| {
-        let n = GL_N;
-        let mut x = vec![0.0; n];
-        let mut w = vec![0.0; n];
-        for i in 0..n {
-            let mut z = (std::f64::consts::PI * (i as f64 + 0.75) / (n as f64 + 0.5)).cos();
-            loop {
-                let (p, dp) = legendre_pair(n, z);
-                let dz = p / dp;
-                z -= dz;
-                if dz.abs() < 1e-16 {
-                    break;
-                }
-            }
-            let (_, dp) = legendre_pair(n, z);
-            x[i] = z;
-            w[i] = 2.0 / ((1.0 - z * z) * dp * dp);
-        }
-        (x, w)
-    })
+    RULE.get_or_init(|| build_rule(GL_N))
+}
+
+/// The 10-node probe rule, computed once.
+fn gl10_rule() -> &'static (Vec<f64>, Vec<f64>) {
+    static RULE: OnceLock<(Vec<f64>, Vec<f64>)> = OnceLock::new();
+    RULE.get_or_init(|| build_rule(GL10_N))
 }
 
 /// Knobs of one adaptive integration.
@@ -77,6 +88,15 @@ pub struct AdaptiveConfig {
     /// Stop refining after this many panels have been evaluated; the
     /// unrefined remainder is budgeted into the error and `capped` is set.
     pub max_panels: usize,
+    /// Acceptance-probe strategy (the item-6 experiment, **measured no-go** —
+    /// see `comparison/results/acceptance_probe.md`): when set, a panel's
+    /// GL10 halves are compared against the GL20 whole first, and the GL20
+    /// value is accepted on agreement (40 nodes per accepted panel instead of
+    /// the classic 60); on disagreement the validated GL20-halves recursion
+    /// runs (80 nodes for that panel).  The weaker probe proxy inflates the
+    /// refinement tree, which cancels the per-panel saving (the telescoping
+    /// argument in the note); the flag exists to reproduce the measurement.
+    pub gl10_probe: bool,
 }
 
 /// Result of one adaptive integration.
@@ -91,29 +111,39 @@ pub struct AdaptiveResult {
     pub capped: bool,
 }
 
-/// One GL20 evaluation of `f` on `[a, b]`: (integral, |f| mass, node errors).
-fn gl20<F>(f: &F, a: f64, b: f64, parallel: bool) -> (Complex64, f64, f64)
+/// One GL-`n` evaluation of `f` on `[a, b]`: (integral, |f| mass, node
+/// errors).  `n` is [`GL_N`] (the workhorse rule) or [`GL10_N`] (the
+/// acceptance-probe rule).  Nodes are evaluated in a fixed order (rayon-
+/// parallel when requested, bitwise identical to serial) and reduced
+/// sequentially.
+fn gl_eval<F>(f: &F, a: f64, b: f64, n: usize, parallel: bool) -> (Complex64, f64, f64)
 where
     F: Fn(f64) -> (Complex64, f64) + Sync,
 {
-    let (x, w) = gl_rule();
+    let (x, w) = if n == GL_N {
+        gl_rule()
+    } else {
+        debug_assert_eq!(n, GL10_N);
+        gl10_rule()
+    };
     let c = 0.5 * (a + b);
     let h = 0.5 * (b - a);
-    let nodes: [f64; GL_N] = std::array::from_fn(|i| c + h * x[i]);
+    let nodes: [f64; GL_N] = std::array::from_fn(|i| if i < n { c + h * x[i] } else { 0.0 });
     let mut vals = [(Complex64::new(0.0, 0.0), 0.0); GL_N];
     if parallel {
-        vals.par_iter_mut()
-            .zip(nodes.par_iter())
+        vals[..n]
+            .par_iter_mut()
+            .zip(nodes[..n].par_iter())
             .for_each(|(slot, &t)| *slot = f(t));
     } else {
-        for (slot, &t) in vals.iter_mut().zip(nodes.iter()) {
+        for (slot, &t) in vals[..n].iter_mut().zip(nodes[..n].iter()) {
             *slot = f(t);
         }
     }
     let mut s = Complex64::new(0.0, 0.0);
     let mut mass = 0.0;
     let mut err = 0.0;
-    for (v, &wi) in vals.iter().zip(w) {
+    for (v, &wi) in vals[..n].iter().zip(w[..n].iter()) {
         // A non-finite value (a node exactly on a pinched branch point)
         // contributes nothing.
         let v = if v.0.re.is_finite() && v.0.im.is_finite() {
@@ -139,7 +169,7 @@ where
     let mut evals = 0usize;
     let mut capped = false;
 
-    let (whole, whole_mass, whole_err) = gl20(f, a, b, parallel);
+    let (whole, whole_mass, whole_err) = gl_eval(f, a, b, GL_N, parallel);
     evals += GL_N;
     // (lo, hi, whole value, whole |f| mass, whole propagated error)
     let mut stack = vec![(a, b, whole, whole_mass, whole_err)];
@@ -152,14 +182,32 @@ where
             continue;
         }
         let mid = 0.5 * (lo + hi);
-        let (l, lm, le) = gl20(f, lo, mid, parallel);
-        let (r, rm, re) = gl20(f, mid, hi, parallel);
+        let len = hi - lo;
+        if cfg.gl10_probe {
+            // Probe first: GL10 halves against the GL20 whole.  On agreement
+            // accept the GL20 value (40 nodes per accepted panel instead of
+            // 60); on disagreement fall through to the validated GL20-halves
+            // recursion (the probe's 20 nodes are then wasted: 80 total).
+            let (l10, lm10, le10) = gl_eval(f, lo, mid, GL10_N, parallel);
+            let (r10, rm10, re10) = gl_eval(f, mid, hi, GL10_N, parallel);
+            evals += 2 * GL10_N;
+            let diff10 = (l10 + r10 - whole).norm();
+            if diff10 <= cfg.tol * len
+                || diff10 <= cfg.floor * (lm10 + rm10)
+                || len < cfg.min_len
+            {
+                // The accepted value is the GL20 `whole`; its propagated node
+                // errors are `whole_err` (the probe's are not part of it).
+                value += whole;
+                error += diff10 + whole_err + le10 + re10;
+                continue;
+            }
+        }
+        let (l, lm, le) = gl_eval(f, lo, mid, GL_N, parallel);
+        let (r, rm, re) = gl_eval(f, mid, hi, GL_N, parallel);
         evals += 2 * GL_N;
         let diff = (l + r - whole).norm();
-        if diff <= cfg.tol * (hi - lo)
-            || diff <= cfg.floor * (lm + rm)
-            || hi - lo < cfg.min_len
-        {
+        if diff <= cfg.tol * len || diff <= cfg.floor * (lm + rm) || len < cfg.min_len {
             value += l + r;
             error += diff + le + re;
         } else {
@@ -191,6 +239,8 @@ pub struct AdaptiveVecConfig {
     /// Stop refining after this many node evaluations; the unrefined remainder
     /// is budgeted into the errors and `capped` is set.
     pub max_panels: usize,
+    /// Acceptance-probe strategy; see [`AdaptiveConfig::gl10_probe`].
+    pub gl10_probe: bool,
 }
 
 /// Result of one vector-valued adaptive integration.
@@ -204,16 +254,19 @@ pub struct AdaptiveVecResult {
     pub capped: bool,
 }
 
-/// One GL20 evaluation of a *vector* integrand on `[a, b]`: `f(t, values,
-/// errors)` fills one value and absolute error per component.  Nodes are
-/// evaluated in a fixed order (rayon-parallel when requested, bitwise
-/// identical to serial), then reduced sequentially.  `valbuf` and `errbuf` are
-/// caller-owned scratch slices of length `GL_N * m`, reused across panels.
-fn gl20_vec<F>(
+/// One GL-`n` evaluation of a *vector* integrand on `[a, b]`: `f(t, values,
+/// errors)` fills one value and absolute error per component.  `n` is
+/// [`GL_N`] or [`GL10_N`] (the probe rule).  Nodes are evaluated in a fixed
+/// order (rayon-parallel when requested, bitwise identical to serial), then
+/// reduced sequentially.  `valbuf` and `errbuf` are caller-owned scratch
+/// slices of length `GL_N * m`, reused across panels.
+#[allow(clippy::too_many_arguments)]
+fn gl_eval_vec<F>(
     f: &F,
     a: f64,
     b: f64,
     m: usize,
+    n: usize,
     parallel: bool,
     valbuf: &mut [Complex64],
     errbuf: &mut [f64],
@@ -221,25 +274,30 @@ fn gl20_vec<F>(
 where
     F: Fn(f64, &mut [Complex64], &mut [f64]) + Sync,
 {
-    let (x, w) = gl_rule();
+    let (x, w) = if n == GL_N {
+        gl_rule()
+    } else {
+        debug_assert_eq!(n, GL10_N);
+        gl10_rule()
+    };
     let c = 0.5 * (a + b);
     let h = 0.5 * (b - a);
-    let nodes: [f64; GL_N] = std::array::from_fn(|i| c + h * x[i]);
+    let nodes: [f64; GL_N] = std::array::from_fn(|i| if i < n { c + h * x[i] } else { 0.0 });
     if parallel {
-        valbuf
+        valbuf[..n * m]
             .par_chunks_mut(m)
-            .zip(errbuf.par_chunks_mut(m))
-            .zip(nodes.par_iter())
+            .zip(errbuf[..n * m].par_chunks_mut(m))
+            .zip(nodes[..n].par_iter())
             .for_each(|((vr, er), &t)| f(t, vr, er));
     } else {
-        for (i, &t) in nodes.iter().enumerate() {
+        for (i, &t) in nodes[..n].iter().enumerate() {
             f(t, &mut valbuf[i * m..(i + 1) * m], &mut errbuf[i * m..(i + 1) * m]);
         }
     }
     let mut values = vec![Complex64::new(0.0, 0.0); m];
     let mut masses = vec![0.0f64; m];
     let mut errs = vec![0.0f64; m];
-    for (i, &wi) in w.iter().enumerate() {
+    for (i, &wi) in w[..n].iter().enumerate() {
         let vr = &valbuf[i * m..(i + 1) * m];
         let er = &errbuf[i * m..(i + 1) * m];
         for k in 0..m {
@@ -291,7 +349,7 @@ where
     let mut evals = 0usize;
     let mut capped = false;
 
-    let (whole, whole_mass, whole_err) = gl20_vec(f, a, b, m, parallel, &mut valbuf, &mut errbuf);
+    let (whole, whole_mass, whole_err) = gl_eval_vec(f, a, b, m, GL_N, parallel, &mut valbuf, &mut errbuf);
     evals += GL_N;
     // (lo, hi, whole values, whole |f| masses, whole propagated errors)
     let mut stack = vec![(a, b, whole, whole_mass, whole_err)];
@@ -305,10 +363,38 @@ where
             continue;
         }
         let mid = 0.5 * (lo + hi);
-        let (l, lm, le) = gl20_vec(f, lo, mid, m, parallel, &mut valbuf, &mut errbuf);
-        let (r, rm, re) = gl20_vec(f, mid, hi, m, parallel, &mut valbuf, &mut errbuf);
-        evals += 2 * GL_N;
         let len = hi - lo;
+        if cfg.gl10_probe {
+            // Probe: GL10 halves against the GL20 whole; accept the GL20
+            // values when every component agrees (see `integrate`).
+            let (l10, lm10, le10) =
+                gl_eval_vec(f, lo, mid, m, GL10_N, parallel, &mut valbuf, &mut errbuf);
+            let (r10, rm10, re10) =
+                gl_eval_vec(f, mid, hi, m, GL10_N, parallel, &mut valbuf, &mut errbuf);
+            evals += 2 * GL10_N;
+            let mut accept = true;
+            for k in 0..m {
+                let diff = (l10[k] + r10[k] - whole[k]).norm();
+                if !(diff <= cfg.tol * len
+                    || diff <= cfg.floors[k] * (lm10[k] + rm10[k])
+                    || len < cfg.min_len)
+                {
+                    accept = false;
+                    break;
+                }
+            }
+            if accept {
+                for k in 0..m {
+                    let diff = (l10[k] + r10[k] - whole[k]).norm();
+                    values[k] += whole[k];
+                    errors[k] += diff + whole_err[k] + le10[k] + re10[k];
+                }
+                continue;
+            }
+        }
+        let (l, lm, le) = gl_eval_vec(f, lo, mid, m, GL_N, parallel, &mut valbuf, &mut errbuf);
+        let (r, rm, re) = gl_eval_vec(f, mid, hi, m, GL_N, parallel, &mut valbuf, &mut errbuf);
+        evals += 2 * GL_N;
         let mut accept = true;
         for k in 0..m {
             let diff = (l[k] + r[k] - whole[k]).norm();
@@ -361,7 +447,7 @@ mod tests {
         // Degree 39 = exactness of the 20-node rule.
         for deg in 0..=39 {
             let f = |x: f64| (Complex64::from(x.powi(deg)), 0.0);
-            let r = integrate(&f, -1.0, 1.0, &AdaptiveConfig { tol: 1e-16, floor: 1e-16, min_len: 1e-15, max_panels: 1000 }, false);
+            let r = integrate(&f, -1.0, 1.0, &AdaptiveConfig { tol: 1e-16, floor: 1e-16, min_len: 1e-15, max_panels: 1000, gl10_probe: false }, false);
             let exact = if deg % 2 == 0 { 2.0 / (deg as f64 + 1.0) } else { 0.0 };
             assert!(
                 (r.value - Complex64::from(exact)).norm() < 1e-13,
@@ -369,6 +455,102 @@ mod tests {
                 r.value
             );
         }
+    }
+
+    #[test]
+    fn gl10_exact_on_polynomials() {
+        // Degree 19 = exactness of the 10-node probe rule.
+        for deg in 0..=19 {
+            let f = |x: f64| (Complex64::from(x.powi(deg)), 0.0);
+            let (v, _, _) = gl_eval(&f, -1.0, 1.0, GL10_N, false);
+            let exact = if deg % 2 == 0 { 2.0 / (deg as f64 + 1.0) } else { 0.0 };
+            assert!(
+                (v - Complex64::from(exact)).norm() < 1e-13,
+                "degree {deg}: got {:.17e}, exact {exact:.17e}",
+                v
+            );
+        }
+    }
+
+    #[test]
+    fn gl10_probe_agrees_and_budgets_honestly() {
+        // The probe strategy is GL20-quality on accepted panels: it must agree
+        // with the classic strategy within the two budgets, and on the
+        // non-smooth sqrt case (panels refine to `min_len`) its own budget
+        // must cover the true error.
+        let base = AdaptiveConfig {
+            tol: 1e-14,
+            floor: 1e-15,
+            min_len: 1e-15,
+            max_panels: 200_000,
+            gl10_probe: false,
+        };
+        let probe = AdaptiveConfig { gl10_probe: true, ..base };
+        for f in [
+            (|x: f64| (Complex64::from_polar(1.0, 30.0 * (x * x - 0.4)), 0.0))
+                as fn(f64) -> (Complex64, f64),
+            |x: f64| (Complex64::new(1.0 / (1.0 + x * x), 0.0), 0.0),
+            |x: f64| (Complex64::new((x * x).exp() * 0.3, (x + 1.0).ln()), x.abs() * 1e-16),
+        ] {
+            let s = integrate(&f, 0.0, 2.0, &base, false);
+            let p = integrate(&f, 0.0, 2.0, &probe, false);
+            let allow = 8.0 * f64::EPSILON * (s.value.norm() + p.value.norm());
+            assert!(
+                s.error + p.error + allow >= (s.value - p.value).norm(),
+                "probe vs classic outside budgets: {:.3e} vs {:.3e}+{:.3e}",
+                (s.value - p.value).norm(),
+                s.error,
+                p.error
+            );
+        }
+        // Non-smooth: the true error must be covered by the probe's budget.
+        let sing = |x: f64| (Complex64::from((x - 0.11).abs().sqrt()), 0.0);
+        let exact = (0.11_f64.powf(1.5) + 0.89_f64.powf(1.5)) / 1.5;
+        let p = integrate(&sing, 0.0, 1.0, &probe, false);
+        assert!(
+            p.error >= (p.value - Complex64::from(exact)).norm(),
+            "probe budget {:+.3e} < true error {:+.3e}",
+            p.error,
+            (p.value - Complex64::from(exact)).norm()
+        );
+        // And the parallel evaluation stays bitwise identical to serial.
+        let pp = integrate(&sing, 0.0, 1.0, &probe, true);
+        assert_eq!(p.value, pp.value);
+        assert_eq!(p.error, pp.error);
+        assert_eq!(p.evals, pp.evals);
+    }
+
+    #[test]
+    fn gl10_probe_vec_matches_classic_within_budgets() {
+        // The vector probe path: same agreement contract, and the vector
+        // result must stay bitwise parallel==serial.
+        let f = |t: f64, v: &mut [Complex64], e: &mut [f64]| {
+            v[0] = Complex64::new(1.0 / (1.0 + t * t), 0.0);
+            v[1] = Complex64::from_polar(1.0, 40.0 * t);
+            e[0] = 0.0;
+            e[1] = 0.0;
+        };
+        let base = AdaptiveVecConfig {
+            tol: 1e-14,
+            floors: vec![1e-16, 1e-16],
+            min_len: 1e-12,
+            max_panels: 200_000,
+            gl10_probe: false,
+        };
+        let probe = AdaptiveVecConfig { gl10_probe: true, ..base.clone() };
+        let s = integrate_vec(&f, -3.0, 3.0, &base, false);
+        let p = integrate_vec(&f, -3.0, 3.0, &probe, false);
+        for k in 0..2 {
+            let allow = 8.0 * f64::EPSILON * (s.values[k].norm() + p.values[k].norm());
+            assert!(
+                s.errors[k] + p.errors[k] + allow >= (s.values[k] - p.values[k]).norm(),
+                "component {k} outside budgets"
+            );
+        }
+        let pp = integrate_vec(&f, -3.0, 3.0, &probe, true);
+        assert_eq!(p.values, pp.values);
+        assert_eq!(p.errors, pp.errors);
+        assert_eq!(p.evals, pp.evals);
     }
 
     #[test]
@@ -390,6 +572,7 @@ mod tests {
                     floor: 4e-16 * (1.0 + 6.0 * k),
                     min_len: 1e-15,
                     max_panels: 200_000,
+                    gl10_probe: false,
                 },
                 false,
             );
@@ -411,7 +594,7 @@ mod tests {
             &f,
             0.0,
             1.0,
-            &AdaptiveConfig { tol: 1e-14, floor: 1e-15, min_len: 1e-9, max_panels: 200_000 },
+            &AdaptiveConfig { tol: 1e-14, floor: 1e-15, min_len: 1e-9, max_panels: 200_000, gl10_probe: false },
             false,
         );
         let true_err = (r.value - Complex64::from(exact)).norm();
@@ -424,7 +607,7 @@ mod tests {
             &f,
             0.0,
             1.0,
-            &AdaptiveConfig { tol: 1e-14, floor: 1e-15, min_len: 1e-9, max_panels: 10 },
+            &AdaptiveConfig { tol: 1e-14, floor: 1e-15, min_len: 1e-9, max_panels: 10, gl10_probe: false },
             false,
         );
         assert!(capped.capped);
@@ -434,7 +617,7 @@ mod tests {
     #[test]
     fn parallel_is_bitwise_identical() {
         let f = |x: f64| (Complex64::from_polar(1.0, 30.0 * (x * x + (x - 0.3).exp())), 0.0);
-        let cfg = AdaptiveConfig { tol: 1e-14, floor: 1e-15, min_len: 1e-15, max_panels: 200_000 };
+        let cfg = AdaptiveConfig { tol: 1e-14, floor: 1e-15, min_len: 1e-15, max_panels: 200_000, gl10_probe: false };
         let s = integrate(&f, -3.0, 3.0, &cfg, false);
         let p = integrate(&f, -3.0, 3.0, &cfg, true);
         assert_eq!(s.value, p.value);
@@ -452,9 +635,9 @@ mod tests {
             Box::new(|x: f64| (Complex64::new((x * x).exp() * 0.3, (x + 1.0).ln()), x.abs() * 1e-16)),
         ];
         for f in &cases {
-            let scfg = AdaptiveConfig { tol: 1e-13, floor: 1e-15, min_len: 1e-10, max_panels: 50_000 };
+            let scfg = AdaptiveConfig { tol: 1e-13, floor: 1e-15, min_len: 1e-10, max_panels: 50_000, gl10_probe: false };
             let s = integrate(f, 0.0, 2.0, &scfg, false);
-            let vcfg = AdaptiveVecConfig { tol: 1e-13, floors: vec![1e-15], min_len: 1e-10, max_panels: 50_000 };
+            let vcfg = AdaptiveVecConfig { tol: 1e-13, floors: vec![1e-15], min_len: 1e-10, max_panels: 50_000, gl10_probe: false };
             let fv = as_vec(f);
             let v = integrate_vec(&fv, 0.0, 2.0, &vcfg, false);
             assert_eq!(v.values[0], s.value, "value bits differ");
@@ -477,7 +660,7 @@ mod tests {
             e[0] = 0.0;
             e[1] = 0.0;
         };
-        let vcfg = AdaptiveVecConfig { tol: 1e-14, floors: vec![1e-16, 1e-16], min_len: 1e-12, max_panels: 200_000 };
+        let vcfg = AdaptiveVecConfig { tol: 1e-14, floors: vec![1e-16, 1e-16], min_len: 1e-12, max_panels: 200_000, gl10_probe: false };
         let r = integrate_vec(&f, -3.0, 3.0, &vcfg, false);
         let rp = integrate_vec(&f, -3.0, 3.0, &vcfg, true);
         assert_eq!(r.values[0], rp.values[0]);

@@ -64,7 +64,7 @@ pub use nd::point_mass_nd;
 pub use phase::{DynPhase, Phase, PhaseAsDyn, RationalPhase, RationalPhase2D, as_dyn};
 pub use polar::{PolarConfig, PolarSolver, solve_point_mass_polar};
 pub use quadrature::{GrundmannMoeller, Quadrature};
-pub use rc1d::{rc_1d_batch, rc_1d_sweep};
+pub use rc1d::{rc_1d_batch, rc_1d_batch_evals, rc_1d_sweep};
 pub use roots::poly_roots;
 pub use saddles::{Saddle, find_saddles, saddles_from_polynomial, second_derivative};
 pub use slice::{
