@@ -36,6 +36,7 @@ __all__ = [
 
 _SolveMethod1D = Literal["mesh", "thimble", "auto"]
 _GridMethod1D = Literal["rc", "thimble", "auto"]
+_SweepMethod1D = Literal["rc", "mesh", "thimble", "auto"]
 _SolveMethod2D = Literal["polar", "mesh", "auto"]
 _FieldMethod = Literal["slice", "mesh", "auto"]
 
@@ -137,10 +138,23 @@ class RationalLens:
         ...
 
     def sweep(
-        self, omegas: Sequence[float], *, method: _SolveMethod1D = "auto"
+        self,
+        omegas: Sequence[float],
+        *,
+        method: _SweepMethod1D = "auto",
+        tol: float | None = None,
+        margin: float | None = None,
+        band_ratio: float | None = None,
     ) -> tuple[list[complex], list[float]]:
         """Amplification factors and error estimates across `omegas` (the
-        wave -> geometric-optics bridge), in the caller's order."""
+        wave -> geometric-optics bridge), in the caller's order.
+
+        `method="rc"` evaluates every frequency on shared exact RC contours
+        (one per `band_ratio` band; validated against the per-frequency
+        thimble); `"auto"` / `"thimble"` / `"mesh"` solve each frequency
+        independently (the production thimble, `"auto"` falling back to the
+        mesh flow at caustics/stalls).
+        """
         ...
 
     def grid(
@@ -195,10 +209,23 @@ class SimGLens:
         ...
 
     def sweep(
-        self, omegas: Sequence[float], *, method: _SolveMethod1D = "auto"
+        self,
+        omegas: Sequence[float],
+        *,
+        method: _SweepMethod1D = "auto",
+        tol: float | None = None,
+        margin: float | None = None,
+        band_ratio: float | None = None,
     ) -> tuple[list[complex], list[float]]:
         """Amplification factors and error estimates across `omegas` (the
-        wave -> geometric-optics bridge), in the caller's order."""
+        wave -> geometric-optics bridge), in the caller's order.
+
+        `method="rc"` evaluates every frequency on shared exact RC contours
+        (one per `band_ratio` band; validated against the per-frequency
+        thimble); `"auto"` / `"thimble"` / `"mesh"` solve each frequency
+        independently (the production thimble, `"auto"` falling back to the
+        mesh flow at caustics/stalls).
+        """
         ...
 
     def grid(
@@ -260,10 +287,23 @@ class CustomRationalLens:
         ...
 
     def sweep(
-        self, omegas: Sequence[float], *, method: _SolveMethod1D = "auto"
+        self,
+        omegas: Sequence[float],
+        *,
+        method: _SweepMethod1D = "auto",
+        tol: float | None = None,
+        margin: float | None = None,
+        band_ratio: float | None = None,
     ) -> tuple[list[complex], list[float]]:
         """Amplification factors and error estimates across `omegas` (the
-        wave -> geometric-optics bridge), in the caller's order."""
+        wave -> geometric-optics bridge), in the caller's order.
+
+        `method="rc"` evaluates every frequency on shared exact RC contours
+        (one per `band_ratio` band; validated against the per-frequency
+        thimble); `"auto"` / `"thimble"` / `"mesh"` solve each frequency
+        independently (the production thimble, `"auto"` falling back to the
+        mesh flow at caustics/stalls).
+        """
         ...
 
     def grid(

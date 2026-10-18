@@ -23,8 +23,8 @@ use crate::rc1d::Rational1DModel;
 use crate::slice_batch::slice_field_batch_g;
 use crate::{
     Error, FieldBatch, InterruptHook, PolarConfig, PolarSolver, RationalPhase, SliceConfig, Solver,
-    SolverConfig, ThimbleConfig, ThimbleSolver, rc_1d_batch, slice_field, slice_field_batch,
-    solve_point_mass_polar,
+    SolverConfig, ThimbleConfig, ThimbleSolver, rc_1d_batch, rc_1d_sweep, slice_field,
+    slice_field_batch, solve_point_mass_polar,
 };
 use rayon::prelude::*;
 use std::f64::consts::PI;
@@ -312,7 +312,29 @@ fn thimble_pieces<P: RationalPhase>(phase: &P, omega: f64) -> PyResult<Vec<Vec<C
 
 // --- 1D phase classes -----------------------------------------------------
 
-macro_rules! solve_thimble_methods {
+/// The per-omega sweep loop shared by the two `sweep` variants: the
+/// production thimble per frequency (`"auto"` falls back to the mesh flow).
+fn sweep_1d_per_omega<P: RationalPhase>(
+    phase: &P,
+    omegas: Vec<f64>,
+    method: &str,
+) -> PyResult<(Vec<Complex64>, Vec<f64>)> {
+    if omegas.is_empty() {
+        return Err(PyValueError::new_err("empty frequency grid"));
+    }
+    let mut amps = Vec::with_capacity(omegas.len());
+    let mut errs = Vec::with_capacity(omegas.len());
+    for w in omegas {
+        let out = solve_1d(phase, w, method, None, None, None, None)?;
+        amps.push(out.amplification);
+        errs.push(out.error / free_space(1, w).norm());
+    }
+    Ok((amps, errs))
+}
+
+/// Shared `solve` / `thimble` / `saddles` methods of the four 1D phase
+/// classes (`sweep` is class-specific, see the two macros below).
+macro_rules! solve_thimble_common {
     ($ty:ident) => {
         #[pymethods]
         impl $ty {
@@ -341,25 +363,78 @@ macro_rules! solve_thimble_methods {
                 let s = saddles_from_polynomial(&self.inner, &poly, 1e-11).map_err(map_err)?;
                 Ok(s.iter().map(|sd| sd.z).collect())
             }
+        }
+    };
+}
 
+/// `sweep` for the cubic ("Airy") phase: per-frequency thimble/mesh — the
+/// cubic is unbounded at infinity, outside the RC construction.
+macro_rules! solve_thimble_methods {
+    ($ty:ident) => {
+        solve_thimble_common!($ty);
+        #[pymethods]
+        impl $ty {
             /// Amplification factor across a list of frequencies (the
             /// wave→geometric-optics bridge). Returns `(amplifications,
-            /// errors)`. A Python loop today; the signature reserves the
-            /// seam for saddle warm-starting later.
+            /// errors)` in the caller's order.
             #[pyo3(signature = (omegas, *, method="auto"))]
             fn sweep(
                 &self,
                 omegas: Vec<f64>,
                 method: &str,
             ) -> PyResult<(Vec<Complex64>, Vec<f64>)> {
-                let mut amps = Vec::with_capacity(omegas.len());
-                let mut errs = Vec::with_capacity(omegas.len());
-                for w in omegas {
-                    let out = solve_1d(&self.inner, w, method, None, None, None, None)?;
-                    amps.push(out.amplification);
-                    errs.push(out.error / free_space(1, w).norm());
+                sweep_1d_per_omega(&self.inner, omegas, method)
+            }
+        }
+    };
+}
+
+/// `sweep` for the three rational lenses: `method="rc"` runs the batched
+/// shared-contour RC sweep ([`rc_1d_sweep`]); `"auto" | "thimble" | "mesh"`
+/// runs the production per-frequency thimble.
+macro_rules! rational_sweep_methods {
+    ($ty:ident) => {
+        solve_thimble_common!($ty);
+        #[pymethods]
+        impl $ty {
+            /// Amplification factor across a list of frequencies (the
+            /// wave→geometric-optics bridge).  `method="rc"` evaluates every
+            /// frequency on shared exact RC contours (one per `band_ratio`
+            /// band; validated against the per-frequency thimble in
+            /// `tests/batch.rs`); `"auto" | "thimble" | "mesh"` solves each
+            /// frequency independently (the production thimble, `"auto"`
+            /// falling back to the mesh flow at caustics/stalls).  Returns
+            /// `(amplifications, errors)` in the caller's order.
+            #[pyo3(signature = (omegas, *, method="auto", tol=None, margin=None, band_ratio=None))]
+            fn sweep(
+                &self,
+                omegas: Vec<f64>,
+                method: &str,
+                tol: Option<f64>,
+                margin: Option<f64>,
+                band_ratio: Option<f64>,
+            ) -> PyResult<(Vec<Complex64>, Vec<f64>)> {
+                match method {
+                    "rc" => {
+                        let cfg = batch_cfg(1.0, tol, margin, None, band_ratio);
+                        let (vals, errs) =
+                            rc_1d_sweep(&self.inner, &omegas, &cfg).map_err(map_err)?;
+                        let mut amps = Vec::with_capacity(omegas.len());
+                        let mut eout = Vec::with_capacity(omegas.len());
+                        for ((v, e), &w) in vals.iter().zip(errs.iter()).zip(omegas.iter()) {
+                            let fs = free_space(1, w);
+                            amps.push(*v / fs);
+                            eout.push(*e / fs.norm());
+                        }
+                        Ok((amps, eout))
+                    }
+                    "auto" | "thimble" | "mesh" => {
+                        sweep_1d_per_omega(&self.inner, omegas, method)
+                    }
+                    other => Err(PyValueError::new_err(format!(
+                        "unknown method '{other}'; use 'rc', 'auto', 'thimble', or 'mesh'"
+                    ))),
                 }
-                Ok((amps, errs))
             }
         }
     };
@@ -395,7 +470,7 @@ impl PyRationalLens {
         }
     }
 }
-solve_thimble_methods!(PyRationalLens);
+rational_sweep_methods!(PyRationalLens);
 
 /// 1D 'simG' lens $\phi(z) = (z-\beta)^2/2 - \kappa/\sum_{k=0}^{k_\max}
 /// z^{2k}/k!$.
@@ -412,7 +487,7 @@ impl PySimG {
         }
     }
 }
-solve_thimble_methods!(PySimG);
+rational_sweep_methods!(PySimG);
 
 /// User-defined 1D rational lens: $\phi(z) = (z-\beta)^2/2 - \kappa
 /// A(z)/B(z)$, with `num` = $A$ and `den` = $B$ ascending complex
@@ -448,7 +523,7 @@ impl PyCustom {
         })
     }
 }
-solve_thimble_methods!(PyCustom);
+rational_sweep_methods!(PyCustom);
 
 /// Batched source-grid solve for the rational 1D lenses: `method="rc"` runs
 /// the shared-contour RC batch (exact by Cauchy; one contour for the grid),
