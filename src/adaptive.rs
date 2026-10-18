@@ -99,12 +99,17 @@ where
     let (x, w) = gl_rule();
     let c = 0.5 * (a + b);
     let h = 0.5 * (b - a);
-    let nodes: Vec<f64> = x.iter().map(|&xi| c + h * xi).collect();
-    let vals: Vec<(Complex64, f64)> = if parallel {
-        nodes.par_iter().map(|&t| f(t)).collect()
+    let nodes: [f64; GL_N] = std::array::from_fn(|i| c + h * x[i]);
+    let mut vals = [(Complex64::new(0.0, 0.0), 0.0); GL_N];
+    if parallel {
+        vals.par_iter_mut()
+            .zip(nodes.par_iter())
+            .for_each(|(slot, &t)| *slot = f(t));
     } else {
-        nodes.iter().map(|&t| f(t)).collect()
-    };
+        for (slot, &t) in vals.iter_mut().zip(nodes.iter()) {
+            *slot = f(t);
+        }
+    }
     let mut s = Complex64::new(0.0, 0.0);
     let mut mass = 0.0;
     let mut err = 0.0;
@@ -202,17 +207,24 @@ pub struct AdaptiveVecResult {
 /// One GL20 evaluation of a *vector* integrand on `[a, b]`: `f(t, values,
 /// errors)` fills one value and absolute error per component.  Nodes are
 /// evaluated in a fixed order (rayon-parallel when requested, bitwise
-/// identical to serial), then reduced sequentially.
-fn gl20_vec<F>(f: &F, a: f64, b: f64, m: usize, parallel: bool) -> (Vec<Complex64>, Vec<f64>, Vec<f64>)
+/// identical to serial), then reduced sequentially.  `valbuf` and `errbuf` are
+/// caller-owned scratch slices of length `GL_N * m`, reused across panels.
+fn gl20_vec<F>(
+    f: &F,
+    a: f64,
+    b: f64,
+    m: usize,
+    parallel: bool,
+    valbuf: &mut [Complex64],
+    errbuf: &mut [f64],
+) -> (Vec<Complex64>, Vec<f64>, Vec<f64>)
 where
     F: Fn(f64, &mut [Complex64], &mut [f64]) + Sync,
 {
     let (x, w) = gl_rule();
     let c = 0.5 * (a + b);
     let h = 0.5 * (b - a);
-    let nodes: Vec<f64> = x.iter().map(|&xi| c + h * xi).collect();
-    let mut valbuf = vec![Complex64::new(0.0, 0.0); GL_N * m];
-    let mut errbuf = vec![0.0f64; GL_N * m];
+    let nodes: [f64; GL_N] = std::array::from_fn(|i| c + h * x[i]);
     if parallel {
         valbuf
             .par_chunks_mut(m)
@@ -274,10 +286,12 @@ where
     assert!(m > 0, "integrate_vec needs at least one component");
     let mut values = vec![Complex64::new(0.0, 0.0); m];
     let mut errors = vec![0.0f64; m];
+    let mut valbuf = vec![Complex64::new(0.0, 0.0); GL_N * m];
+    let mut errbuf = vec![0.0f64; GL_N * m];
     let mut evals = 0usize;
     let mut capped = false;
 
-    let (whole, whole_mass, whole_err) = gl20_vec(f, a, b, m, parallel);
+    let (whole, whole_mass, whole_err) = gl20_vec(f, a, b, m, parallel, &mut valbuf, &mut errbuf);
     evals += GL_N;
     // (lo, hi, whole values, whole |f| masses, whole propagated errors)
     let mut stack = vec![(a, b, whole, whole_mass, whole_err)];
@@ -291,8 +305,8 @@ where
             continue;
         }
         let mid = 0.5 * (lo + hi);
-        let (l, lm, le) = gl20_vec(f, lo, mid, m, parallel);
-        let (r, rm, re) = gl20_vec(f, mid, hi, m, parallel);
+        let (l, lm, le) = gl20_vec(f, lo, mid, m, parallel, &mut valbuf, &mut errbuf);
+        let (r, rm, re) = gl20_vec(f, mid, hi, m, parallel, &mut valbuf, &mut errbuf);
         evals += 2 * GL_N;
         let len = hi - lo;
         let mut accept = true;

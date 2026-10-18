@@ -31,7 +31,23 @@ use crate::error::{Error, Result};
 use crate::phases::PointMassField;
 use crate::slice::{SliceConfig, SliceEval, SliceModel, check_interrupted};
 use num_complex::Complex64;
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+thread_local! {
+    static SERIES_SCRATCH: RefCell<Vec<Complex64>> = const { RefCell::new(Vec::new()) };
+}
+
+#[inline]
+fn with_series_scratch<R>(len: usize, f: impl FnOnce(&mut [Complex64]) -> R) -> R {
+    SERIES_SCRATCH.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        if buf.len() < len {
+            buf.resize(len, Complex64::new(0.0, 0.0));
+        }
+        f(&mut buf[..len])
+    })
+}
 
 /// A batch: frequencies and a tensor source grid `beta0s × beta1s`.
 #[derive(Debug, Clone)]
@@ -367,46 +383,48 @@ fn run_group<M: SliceModel>(
             // whichever of the two grids is larger drives the series.
             if beta0_uniform.is_some() && m0 >= nw {
                 // per omega: one beta0 series (2 exps + m0 muls), base e^{i w A}
-                let mut sj = vec![Complex64::new(0.0, 0.0); nw];
-                fill_series(&mut sj, omegas, phi0, omega_uniform);
-                let mut tj_b = vec![Complex64::new(0.0, 0.0); m0];
-                for (j, &w) in omegas.iter().enumerate() {
-                    fill_series(&mut tj_b, beta0s, -z0 * w, beta0_uniform);
-                    let s = sj[j];
-                    for i in 0..m0 {
-                        vals[j * m0 + i] = s * tj_b[i] * c0[j * m0 + i];
-                        errs[j * m0 + i] = 0.0;
+                with_series_scratch(nw, |sj| {
+                    fill_series(sj, omegas, phi0, omega_uniform);
+                    for (j, &w) in omegas.iter().enumerate() {
+                        let row = &mut vals[j * m0..(j + 1) * m0];
+                        fill_series(row, beta0s, -z0 * w, beta0_uniform);
+                        let s = sj[j];
+                        for i in 0..m0 {
+                            row[i] = s * row[i] * c0[j * m0 + i];
+                            errs[j * m0 + i] = 0.0;
+                        }
                     }
-                }
+                });
             } else {
                 // per beta0: one series over the omegas of the *merged* phase
                 // A - beta0 z0 (one exp per (node, omega) instead of two)
-                let mut t_w = vec![Complex64::new(0.0, 0.0); nw];
-                for (i, &b0) in beta0s.iter().enumerate() {
-                    fill_series(
-                        &mut t_w,
-                        omegas,
-                        phi0 - z0 * Complex64::from(b0),
-                        omega_uniform,
-                    );
-                    for j in 0..nw {
-                        vals[j * m0 + i] = t_w[j] * c0[j * m0 + i];
-                        errs[j * m0 + i] = 0.0;
+                with_series_scratch(nw, |t_w| {
+                    for (i, &b0) in beta0s.iter().enumerate() {
+                        fill_series(
+                            t_w,
+                            omegas,
+                            phi0 - z0 * Complex64::from(b0),
+                            omega_uniform,
+                        );
+                        for j in 0..nw {
+                            vals[j * m0 + i] = t_w[j] * c0[j * m0 + i];
+                            errs[j * m0 + i] = 0.0;
+                        }
                     }
-                }
+                });
             }
         };
 
+        let cfg_core = AdaptiveVecConfig {
+            tol: cfg.tol_inner,
+            floors: floors.clone(),
+            min_len: 1e-15,
+            max_panels: 200_000,
+        };
         for win in pts.windows(2) {
             let (lo, hi) = (win[0], win[1]);
             let half = 0.5 * (hi - lo);
             for (x0, sgn) in [(lo, 1.0), (hi, -1.0)] {
-                let cfg_core = AdaptiveVecConfig {
-                    tol: cfg.tol_inner,
-                    floors: floors.clone(),
-                    min_len: 1e-15,
-                    max_panels: 200_000,
-                };
                 let f = |t: f64, vals: &mut [Complex64], errs: &mut [f64]| {
                     eval_core(t, x0, sgn, vals, errs)
                 };
@@ -423,7 +441,7 @@ fn run_group<M: SliceModel>(
         let e4 = Complex64::from_polar(1.0, tail_sign * cfg.tail_angle);
         let tail_cfg = AdaptiveVecConfig {
             tol: cfg.tol_inner,
-            floors: floors.clone(),
+            floors,
             min_len: 1e-14,
             max_panels: 200_000,
         };
@@ -435,31 +453,33 @@ fn run_group<M: SliceModel>(
                 let z = end_z + sgn * e4 * t;
                 let phi0 = ev.phi_tail(z);
                 if beta0_uniform.is_some() && m0 >= nw {
-                    let mut sj = vec![Complex64::new(0.0, 0.0); nw];
-                    fill_series(&mut sj, omegas, phi0, omega_uniform);
-                    let mut tj_b = vec![Complex64::new(0.0, 0.0); m0];
-                    for (j, &w) in omegas.iter().enumerate() {
-                        fill_series(&mut tj_b, beta0s, -z * w, beta0_uniform);
-                        let s = sj[j] * e4;
-                        for i in 0..m0 {
-                            vals[j * m0 + i] = s * tj_b[i] * c0[j * m0 + i];
-                            errs[j * m0 + i] = 0.0;
+                    with_series_scratch(nw, |sj| {
+                        fill_series(sj, omegas, phi0, omega_uniform);
+                        for (j, &w) in omegas.iter().enumerate() {
+                            let row = &mut vals[j * m0..(j + 1) * m0];
+                            fill_series(row, beta0s, -z * w, beta0_uniform);
+                            let s = sj[j] * e4;
+                            for i in 0..m0 {
+                                row[i] = s * row[i] * c0[j * m0 + i];
+                                errs[j * m0 + i] = 0.0;
+                            }
                         }
-                    }
+                    });
                 } else {
-                    let mut t_w = vec![Complex64::new(0.0, 0.0); nw];
-                    for (i, &b0) in beta0s.iter().enumerate() {
-                        fill_series(
-                            &mut t_w,
-                            omegas,
-                            phi0 - z * Complex64::from(b0),
-                            omega_uniform,
-                        );
-                        for j in 0..nw {
-                            vals[j * m0 + i] = e4 * t_w[j] * c0[j * m0 + i];
-                            errs[j * m0 + i] = 0.0;
+                    with_series_scratch(nw, |t_w| {
+                        for (i, &b0) in beta0s.iter().enumerate() {
+                            fill_series(
+                                t_w,
+                                omegas,
+                                phi0 - z * Complex64::from(b0),
+                                omega_uniform,
+                            );
+                            for j in 0..nw {
+                                vals[j * m0 + i] = e4 * t_w[j] * c0[j * m0 + i];
+                                errs[j * m0 + i] = 0.0;
+                            }
                         }
-                    }
+                    });
                 }
             };
             // decay probe: componentwise, against the sampled magnitudes
@@ -545,42 +565,44 @@ fn run_group<M: SliceModel>(
                    vals: &mut [Complex64],
                    errs: &mut [f64]| {
         if use_beta1_series {
-            let mut t1 = vec![Complex64::new(0.0, 0.0); m1];
-            for (j, &w) in omegas.iter().enumerate() {
-                fill_series(&mut t1, beta1s, -x2 * w, beta1_uniform);
-                for i0 in 0..m0 {
-                    let base = inner_vals[j * m0 + i0] * jac;
-                    let base_e = inner_errs[j * m0 + i0] * jac.abs();
-                    for (i1, &t) in t1.iter().enumerate() {
-                        let k = (j * m0 + i0) * m1 + i1;
-                        vals[k] = base * t * c1[j * m1 + i1];
-                        errs[k] = base_e;
+            with_series_scratch(m1, |t1| {
+                for (j, &w) in omegas.iter().enumerate() {
+                    fill_series(t1, beta1s, -x2 * w, beta1_uniform);
+                    for i0 in 0..m0 {
+                        let base = inner_vals[j * m0 + i0] * jac;
+                        let base_e = inner_errs[j * m0 + i0] * jac.abs();
+                        for (i1, &t) in t1.iter().enumerate() {
+                            let k = (j * m0 + i0) * m1 + i1;
+                            vals[k] = base * t * c1[j * m1 + i1];
+                            errs[k] = base_e;
+                        }
                     }
                 }
-            }
+            });
         } else {
             // per (i0, i1): one series over the omegas of the merged phase
             // (the beta1^2/2 constant folded in, so no separate c1 factor)
-            let mut t_w = vec![Complex64::new(0.0, 0.0); nw];
-            for i0 in 0..m0 {
-                for (i1, &b1) in beta1s.iter().enumerate() {
-                    let phi =
-                        Complex64::from(0.5 * b1 * b1) - Complex64::from(b1) * x2;
-                    fill_series(&mut t_w, omegas, phi, omega_uniform);
-                    for j in 0..nw {
-                        let k = (j * m0 + i0) * m1 + i1;
-                        vals[k] = inner_vals[j * m0 + i0] * jac * t_w[j];
-                        errs[k] = inner_errs[j * m0 + i0] * jac.abs();
+            with_series_scratch(nw, |t_w| {
+                for i0 in 0..m0 {
+                    for (i1, &b1) in beta1s.iter().enumerate() {
+                        let phi =
+                            Complex64::from(0.5 * b1 * b1) - Complex64::from(b1) * x2;
+                        fill_series(t_w, omegas, phi, omega_uniform);
+                        for j in 0..nw {
+                            let k = (j * m0 + i0) * m1 + i1;
+                            vals[k] = inner_vals[j * m0 + i0] * jac * t_w[j];
+                            errs[k] = inner_errs[j * m0 + i0] * jac.abs();
+                        }
                     }
                 }
-            }
+            });
         }
     };
 
     // outer core: anchored halves x2 = x0 + sgn*rho^2 (dx2 = 2 rho d rho)
     let outer_cfg = AdaptiveVecConfig {
         tol: cfg.tol_outer,
-        floors: floors.clone(),
+        floors,
         min_len: 1e-12,
         max_panels: 200_000,
     };

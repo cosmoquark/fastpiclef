@@ -191,10 +191,9 @@ pub fn rc_1d_batch<M: Rational1DModel>(
     let eval = |z: Complex64, e4fac: Complex64, vals: &mut [Complex64], errs: &mut [f64]| {
         let base = e4fac * (iw * lens.phase_no_source(z)).exp();
         if beta_uniform.is_some() {
-            let mut t = vec![Complex64::new(0.0, 0.0); m];
-            fill_series(&mut t, betas, -z * omega, beta_uniform);
+            fill_series(vals, betas, -z * omega, beta_uniform);
             for i in 0..m {
-                vals[i] = base * t[i] * c[i];
+                vals[i] = base * vals[i] * c[i];
                 errs[i] = 0.0;
             }
         } else {
@@ -214,7 +213,7 @@ pub fn rc_1d_batch<M: Rational1DModel>(
     };
     let tail_cfg = AdaptiveVecConfig {
         tol: cfg.tol_inner,
-        floors: floors.clone(),
+        floors,
         min_len: 1e-14,
         max_panels: 200_000,
     };
