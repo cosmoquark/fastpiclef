@@ -1,5 +1,6 @@
 //! Batched RC (real core + rotated tails) for 1D rational lenses (P1, plan
-//! §3.4): one shared contour serves a whole source grid.
+//! §3.4): one shared contour serves a whole source grid ([`rc_1d_batch`]) or a
+//! frequency sweep ([`rc_1d_sweep`]).
 //!
 //! `phi(z; beta) = 1/2 (z - beta)^2 - pot(z)` with `pot` rational; the exactness
 //! argument is the simplest of the family — the potential's singularities are
@@ -21,8 +22,8 @@ use crate::error::{Error, Result};
 use crate::phase::RationalPhase;
 use crate::phases::{CustomRationalLens, RationalLens, SimGLens};
 use crate::roots::poly_eval;
-use crate::slice::SliceConfig;
-use crate::slice_batch::{fill_series, uniform_step};
+use crate::slice::{SliceConfig, check_interrupted};
+use crate::slice_batch::{fill_series, max_group_components, uniform_step};
 use nalgebra::SVector;
 use num_complex::Complex64;
 
@@ -274,4 +275,264 @@ pub fn rc_1d_batch<M: Rational1DModel>(
     }
 
     Ok((total, terr))
+}
+
+/// Batched frequency sweep `int_R e^{i omega_j phi} dz` for a rational lens
+/// over a list of frequencies — the frequency-side sibling of
+/// [`rc_1d_batch`].
+///
+/// Sorted frequencies are grouped greedily while
+/// `omega_max/omega_min <= cfg.band_ratio`; one shared RC contour (its tails
+/// sized by the band's lowest frequency, whose decay is slowest) serves every
+/// member, and each quadrature node evaluates the phase once and fills the
+/// band's integrand vector with the re-anchored twiddle recurrence of
+/// [`crate::slice_batch::fill_series`].  Exact by the same Cauchy
+/// construction as [`crate::slice::slice_field`]; graded against the
+/// production per-frequency thimble on uniform and jittered grids in
+/// `tests/batch.rs`.
+///
+/// `cfg.omega` is ignored (the argument carries the frequencies); `margin`,
+/// `tol_inner`, `tail_angle`, `band_ratio`, `parallel` and `interrupt` are
+/// honoured.  Returns `(values, errors)` in the caller's omega order; raw
+/// integrals, as everywhere.
+#[allow(private_bounds)]
+pub fn rc_1d_sweep<M: Rational1DModel>(
+    lens: &M,
+    omegas: &[f64],
+    cfg: &SliceConfig,
+) -> Result<(Vec<Complex64>, Vec<f64>)> {
+    // ---- validation (mirrors `rc_1d_batch` + the 2D batch's band check) ----
+    if omegas.is_empty() {
+        return Err(Error::InvalidInput("empty frequency grid"));
+    }
+    for &w in omegas {
+        if !(w > 0.0) || !w.is_finite() {
+            return Err(Error::InvalidInput("omega must be > 0 and finite"));
+        }
+    }
+    if !(cfg.margin > 0.0) || !cfg.margin.is_finite() {
+        return Err(Error::InvalidInput("margin must be > 0 and finite"));
+    }
+    if !(cfg.tail_angle > 0.0) || cfg.tail_angle > std::f64::consts::FRAC_PI_4 {
+        return Err(Error::InvalidInput("tail angle must be in (0, pi/4]"));
+    }
+    if !(cfg.band_ratio > 1.0) || !cfg.band_ratio.is_finite() {
+        return Err(Error::InvalidInput("band_ratio must be > 1 and finite"));
+    }
+    if !lens.bounded_at_infinity() {
+        return Err(Error::InvalidInput(
+            "potential unbounded at infinity (deg A > deg B): the RC construction requires deg A <= deg B",
+        ));
+    }
+    let poles = lens.poles();
+    for p in &poles {
+        if !p.re.is_finite() || !p.im.is_finite() {
+            return Err(Error::InvalidInput("lens poles must be finite"));
+        }
+        if p.im.abs() < 1e-12 {
+            return Err(Error::InvalidInput(
+                "pole on the real axis: the real-line integral diverges",
+            ));
+        }
+    }
+
+    let bmax = lens.beta().abs();
+
+    // contour core: spanning the source and every pole's real part
+    let (mut amin, mut amax) = (lens.beta(), lens.beta());
+    for p in &poles {
+        amin = amin.min(p.re);
+        amax = amax.max(p.re);
+    }
+    let (aa, bb) = (amin - cfg.margin, amax + cfg.margin);
+    let mut pts = vec![aa, bb];
+    pts.extend(poles.iter().map(|p| p.re));
+    pts.sort_by(|p, q| p.partial_cmp(q).unwrap());
+    pts.dedup();
+
+    // roundoff floor: sampled |pot| bound (an underestimate only costs panels)
+    let zmax = aa.abs().max(bb.abs());
+    let mut potmax = 1.0f64;
+    for &z0 in &[aa, 0.5 * (aa + bb), bb] {
+        let pot = 0.5 * z0 * z0 - lens.phase_no_source(Complex64::from(z0));
+        potmax = potmax.max(pot.norm());
+    }
+    let qbound = 0.5 * zmax * zmax + bmax * zmax + 0.5 * bmax * bmax + potmax + 5.0;
+
+    // ---- greedy frequency bands over sorted omega ----
+    let mut order: Vec<usize> = (0..omegas.len()).collect();
+    order.sort_by(|&i, &j| omegas[i].partial_cmp(&omegas[j]).unwrap());
+    let mut bands: Vec<Vec<usize>> = Vec::new();
+    for &i in &order {
+        match bands.last_mut() {
+            Some(band) if omegas[i] <= omegas[band[0]] * cfg.band_ratio => band.push(i),
+            _ => bands.push(vec![i]),
+        }
+    }
+
+    let mut values = vec![Complex64::new(0.0, 0.0); omegas.len()];
+    let mut errors = vec![0.0f64; omegas.len()];
+    for band in &bands {
+        check_interrupted(cfg)?;
+        let ws: Vec<f64> = band.iter().map(|&i| omegas[i]).collect();
+        let omega_uniform = uniform_step(&ws);
+        // vector chunks (memory cap; a sweep this large is unusual but the
+        // band path must stay bounded like the 2D batch's)
+        let cap = max_group_components();
+        let cw = ws.len().min(cap);
+        for w0 in (0..ws.len()).step_by(cw) {
+            let w1 = (w0 + cw).min(ws.len());
+            check_interrupted(cfg)?;
+            let (vals, errs) =
+                run_band(lens, cfg, &ws[w0..w1], omega_uniform, aa, bb, &pts, qbound, bmax)?;
+            // scatter back to the caller's order
+            for (jj, &kj) in band[w0..w1].iter().enumerate() {
+                values[kj] = vals[jj];
+                errors[kj] = errs[jj];
+            }
+        }
+    }
+    Ok((values, errors))
+}
+
+/// One band × chunk: the vectorised 1D RC integral on the band's shared
+/// contour.  Returns values/errors in the (sorted) chunk's layout, or
+/// [`Error::Interrupted`] if the config's probe fired between contour legs
+/// (only ever checked on the calling thread, never inside a rayon task).
+#[allow(clippy::too_many_arguments)]
+fn run_band<M: Rational1DModel>(
+    lens: &M,
+    cfg: &SliceConfig,
+    omegas: &[f64],
+    omega_uniform: Option<f64>,
+    aa: f64,
+    bb: f64,
+    pts: &[f64],
+    qbound: f64,
+    bmax: f64,
+) -> Result<(Vec<Complex64>, Vec<f64>)> {
+    let m = omegas.len();
+    let wmin = omegas[0]; // sorted ascending by the caller
+    let floors: Vec<f64> = omegas.iter().map(|&w| 4e-16 * (1.0 + w * qbound)).collect();
+
+    // integrand at one contour node: e4fac * e^{i omega phi(z)}
+    let eval = |z: Complex64, e4fac: Complex64, vals: &mut [Complex64], errs: &mut [f64]| {
+        let phi = lens.value(&SVector::<Complex64, 1>::new(z));
+        fill_series(vals, omegas, phi, omega_uniform);
+        for v in vals.iter_mut() {
+            *v *= e4fac;
+        }
+        errs.fill(0.0);
+    };
+
+    let one = Complex64::new(1.0, 0.0);
+    let core_cfg = AdaptiveVecConfig {
+        tol: cfg.tol_inner,
+        floors: floors.clone(),
+        min_len: 1e-15,
+        max_panels: 200_000,
+    };
+    let tail_cfg = AdaptiveVecConfig {
+        tol: cfg.tol_inner,
+        floors,
+        min_len: 1e-14,
+        max_panels: 200_000,
+    };
+    let mut total = vec![Complex64::new(0.0, 0.0); m];
+    let mut terr = vec![0.0f64; m];
+
+    // real core: anchored halves over every breakpoint interval
+    for win in pts.windows(2) {
+        let (lo, hi) = (win[0], win[1]);
+        let half = 0.5 * (hi - lo);
+        for (x0, sgn) in [(lo, 1.0), (hi, -1.0)] {
+            check_interrupted(cfg)?;
+            let f = |t: f64, vals: &mut [Complex64], errs: &mut [f64]| {
+                eval(Complex64::from(x0 + sgn * t), one, vals, errs)
+            };
+            let res = integrate_vec(&f, 0.0, half, &core_cfg, cfg.parallel);
+            for k in 0..m {
+                total[k] += res.values[k];
+                terr[k] += res.errors[k];
+            }
+        }
+    }
+
+    // rotated tails: z = end + sgn*e4*t, both contributing +e4 * integrand
+    let e4 = Complex64::from_polar(1.0, cfg.tail_angle);
+    let mut t_end = (2.0 * 45.0 / wmin).sqrt() + bmax / cfg.tail_angle.cos() + 2.0;
+    for (end_z, sgn) in [(bb, 1.0), (aa, -1.0)] {
+        check_interrupted(cfg)?;
+        let eval_tail = |t: f64, vals: &mut [Complex64], errs: &mut [f64]| {
+            eval(end_z + sgn * e4 * t, e4, vals, errs)
+        };
+        // decay probe: componentwise, against the sampled magnitudes
+        let mut probed = false;
+        for _ in 0..5 {
+            let mut peak = vec![0.0f64; m];
+            let mut vals = vec![Complex64::new(0.0, 0.0); m];
+            let mut errs = vec![0.0f64; m];
+            for s in 0..16 {
+                let tt = t_end * (s as f64) / 16.0;
+                eval_tail(tt, &mut vals, &mut errs);
+                for k in 0..m {
+                    peak[k] = peak[k].max(vals[k].norm());
+                }
+            }
+            eval_tail(t_end, &mut vals, &mut errs);
+            probed = (0..m).all(|k| vals[k].norm() <= 1e-17 * peak[k].max(1e-30));
+            if probed {
+                break;
+            }
+            t_end *= 2.0;
+        }
+        let res = integrate_vec(&eval_tail, 0.0, t_end, &tail_cfg, cfg.parallel);
+        let mut end_vals = vec![Complex64::new(0.0, 0.0); m];
+        let mut end_errs = vec![0.0f64; m];
+        eval_tail(t_end, &mut end_vals, &mut end_errs);
+        for k in 0..m {
+            total[k] += res.values[k];
+            terr[k] += res.errors[k];
+            let end = end_vals[k].norm();
+            terr[k] += if probed { 4.0 * end } else { t_end * end };
+        }
+    }
+
+    Ok((total, terr))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::slice_batch::{DEFAULT_MAX_GROUP_COMPONENTS, MAX_GROUP_COMPONENTS};
+    use std::sync::atomic::Ordering;
+
+    /// A lowered memory cap must engage the chunking path and stay correct.
+    #[test]
+    fn sweep_tiny_cap_chunks_and_stays_correct() {
+        let lens = RationalLens { beta: -0.72, kappa: -2.0 };
+        let omegas: Vec<f64> = (0..10).map(|i| 1.0 + 0.5 * i as f64).collect();
+        let cfg = SliceConfig { omega: 1.0, parallel: false, ..Default::default() };
+        MAX_GROUP_COMPONENTS.store(4, Ordering::Relaxed);
+        let (vals, errs) = rc_1d_sweep(&lens, &omegas, &cfg).unwrap();
+        MAX_GROUP_COMPONENTS.store(DEFAULT_MAX_GROUP_COMPONENTS, Ordering::Relaxed);
+        let mut scale = 0.0f64;
+        let mut refs = Vec::with_capacity(omegas.len());
+        for &w in &omegas {
+            let (v, _) = rc_1d_batch(&lens, &[-0.72], w, &cfg).unwrap();
+            scale = scale.max(v[0].norm());
+            refs.push(v[0]);
+        }
+        for (i, &w) in omegas.iter().enumerate() {
+            let d = (vals[i] - refs[i]).norm();
+            assert!(d / scale < 1e-12, "chunked sweep [{i}] w={w}: {:.3e}", d / scale);
+            let allow = 8.0 * f64::EPSILON * refs[i].norm();
+            assert!(
+                errs[i] + allow >= d,
+                "chunked sweep [{i}]: budget {:.3e} does not cover true error {:.3e}",
+                errs[i],
+                d
+            );
+        }
+    }
 }

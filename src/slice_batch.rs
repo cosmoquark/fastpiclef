@@ -73,14 +73,15 @@ pub struct FieldBatchOutput {
 }
 
 /// Memory cap per vector group (complex entries).  Larger batches are chunked
-/// automatically along the beta grids.  Unit tests can lower it through
-/// [`set_max_group_components`] to exercise the chunking path cheaply.
-const DEFAULT_MAX_GROUP_COMPONENTS: usize = 1 << 16;
+/// automatically along the beta grids (and the omega bands, in the 1D sweep).
+/// Unit tests can lower it through [`MAX_GROUP_COMPONENTS`] to exercise the
+/// chunking path cheaply.
+pub(crate) const DEFAULT_MAX_GROUP_COMPONENTS: usize = 1 << 16;
 #[cfg(test)]
 pub(crate) static MAX_GROUP_COMPONENTS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(DEFAULT_MAX_GROUP_COMPONENTS);
 
-fn max_group_components() -> usize {
+pub(crate) fn max_group_components() -> usize {
     #[cfg(test)]
     {
         MAX_GROUP_COMPONENTS.load(Ordering::Relaxed)

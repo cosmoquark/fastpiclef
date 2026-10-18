@@ -9,8 +9,8 @@
 //!   axisymmetric star/halo profile model ([`LensField`]).  Exact by Cauchy
 //!   with no branch-point sweeping.
 //! - **Shared-contour batching** ([`slice_field_batch`], [`lens_field_batch`],
-//!   [`rc_1d_batch`]) — one contour serves a tensor source grid and/or
-//!   frequency band via [`adaptive::integrate_vec`].
+//!   [`rc_1d_batch`], [`rc_1d_sweep`]) — one contour serves a tensor source
+//!   grid and/or frequency band via [`adaptive::integrate_vec`].
 //! - **High-$\omega$ stationary-phase hybrid** ([`lens_field_hybrid`],
 //!   [`point_mass_field_hybrid`]) — geometric optics plus the validated
 //!   $O(1/\omega)$ correction ([`lens_field_geometric_corrected`],
@@ -64,7 +64,7 @@ pub use nd::point_mass_nd;
 pub use phase::{DynPhase, Phase, PhaseAsDyn, RationalPhase, RationalPhase2D, as_dyn};
 pub use polar::{PolarConfig, PolarSolver, solve_point_mass_polar};
 pub use quadrature::{GrundmannMoeller, Quadrature};
-pub use rc1d::rc_1d_batch;
+pub use rc1d::{rc_1d_batch, rc_1d_sweep};
 pub use roots::poly_roots;
 pub use saddles::{Saddle, find_saddles, saddles_from_polynomial, second_derivative};
 pub use slice::{
