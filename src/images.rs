@@ -328,13 +328,13 @@ pub fn geometric_amplification(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// The getting-started notebook field stock: `np.random.default_rng(7)`
     /// uniform draws in `[-3, 3]^2`, every mass 0.05 — embedded at 17
     /// significant digits so the Rust tests use the exact same field.
-    const NOTEBOOK_FIELD: [(f64, f64, f64); 40] = [
+    pub(crate) const NOTEBOOK_FIELD: [(f64, f64, f64); 40] = [
         (0.75057279962800205, 2.3832828058174531, 0.05),
         (1.6541141414711609, -1.6487568600564488, 0.05),
         (-1.1990022905326474, 2.2413206723775714, 0.05),
@@ -376,7 +376,7 @@ mod tests {
         (2.669689026869877, 2.4235007291755606, 0.05),
         (0.41831488715566323, -2.1272402774344386, 0.05),
     ];
-    const NOTEBOOK_BETA: [f64; 2] = [0.5, 0.2];
+    pub(crate) const NOTEBOOK_BETA: [f64; 2] = [0.5, 0.2];
 
     #[test]
     fn single_mass_recovers_point_mass_images() {

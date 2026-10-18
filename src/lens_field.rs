@@ -523,14 +523,22 @@ pub fn lens_field_batch(
 /// Real-space gradient and Hessian of the phase at a real point `x` in a
 /// single pass over `field.components` (the chain rule with `psi'` and
 /// `psi''`; matches [`hess_analytic`] at real `z` and the complex-step
-/// Hessian to machine precision).
-fn real_grad_and_hess(field: &LensField, x: [f64; 2]) -> ([f64; 2], [[f64; 2]; 2]) {
+/// Hessian to machine precision), skipping a set of component indices — the
+/// local *smooth part* at a cusp centre, used by [`cusp_groups`].
+fn grad_hess_excluding(
+    field: &LensField,
+    x: [f64; 2],
+    skip: &[usize],
+) -> ([f64; 2], [[f64; 2]; 2]) {
     let mut g = [
         field.lambda0 * x[0] - field.beta[0],
         field.lambda2 * x[1] - field.beta[1],
     ];
     let mut h = [[field.lambda0, 0.0], [0.0, field.lambda2]];
-    for c in &field.components {
+    for (k, c) in field.components.iter().enumerate() {
+        if skip.contains(&k) {
+            continue;
+        }
         let d = [x[0] - c.x, x[1] - c.y];
         let wc = Complex64::from(d[0] * d[0] + d[1] * d[1]);
         let p1 = c.profile.dpsi_dw(wc).re;
@@ -549,6 +557,197 @@ fn real_grad_and_hess(field: &LensField, x: [f64; 2]) -> ([f64; 2], [[f64; 2]; 2
     (g, h)
 }
 
+/// [`grad_hess_excluding`] over all components.
+fn real_grad_and_hess(field: &LensField, x: [f64; 2]) -> ([f64; 2], [[f64; 2]; 2]) {
+    grad_hess_excluding(field, x, &[])
+}
+
+/// Smallest `|eigenvalue|` of a symmetric `2x2` matrix.
+fn min_abs_eigenvalue(h: [[f64; 2]; 2]) -> f64 {
+    let (a, b) = eig_range(h);
+    a.abs().min(b.abs())
+}
+
+/// Eigenvalue range `(min, max)` of a symmetric `2x2` matrix.
+fn eig_range(h: [[f64; 2]; 2]) -> (f64, f64) {
+    let tr = h[0][0] + h[1][1];
+    let det = h[0][0] * h[1][1] - h[0][1] * h[1][0];
+    let disc = (tr * tr - 4.0 * det).max(0.0).sqrt();
+    ((tr - disc) / 2.0, (tr + disc) / 2.0)
+}
+
+/// Near-singular local smooth Hessian floor: below it the local cusp model is
+/// near-critical, the companion scale is not certified, and the per-group
+/// companion check is skipped (the index-identity term still applies).
+const LAMBDA_FLOOR: f64 = 1e-8;
+
+/// One *effective cusp* of a lens field: a group of coincident components
+/// whose deflection winds around their common centre.  The completeness
+/// certificate of [`lens_field_images`] uses the group's winding `W_j` in the
+/// index identity and its local scale for the companion check; the finder
+/// seeds its Newton ladders from the group.
+struct CuspGroup {
+    /// Group centre.
+    x: f64,
+    y: f64,
+    /// Signed weight: the summed mass of the group's unsoftened points
+    /// (point-dominated) or the summed `psi0` of its SIS-type cusps.  The
+    /// sign does not affect the winding (`W_j` is `+1` per active group) — it
+    /// only gates the companion check (repulsive groups are skipped).
+    weight: f64,
+    /// The group's points dominate at the centre (`1/|d|` against a bounded
+    /// deflection).
+    is_point: bool,
+    /// `W_j`, the winding of `grad phi` around the centre (counterclockwise):
+    /// `1` for an active group, `0` otherwise.  The winding is `+1` whatever
+    /// the weight's sign — the deflection is anti-holomorphic (`~ 1/d̄`) and a
+    /// negative weight is a `pi`-rotation, which leaves the winding unchanged.
+    /// A group is active when its dominant class is a point (always) or an
+    /// SIS-type cusp with `|g_s| < |weight|` (the source inside the cusp's
+    /// Einstein ring).  The index identity subtracts `W_j` (see
+    /// [`index_identity_rhs`]).
+    winding: i64,
+    /// Smooth gradient at the centre (macro + non-singular components): the
+    /// weak-regime companion direction and scale.
+    g_s: [f64; 2],
+    /// Smallest `|eigenvalue|` of the smooth Hessian at the centre (the
+    /// strong-regime seed scale).
+    lambda_loc: f64,
+    /// Local Einstein scale: `sqrt(|weight|/lambda_loc)` for point-dominated
+    /// groups, `|weight|/lambda_loc` for SIS-type groups.
+    scale: f64,
+    /// Companion-check radius (`2 * r + 0.1`, see [`cusp_groups`]); `0` = no
+    /// check (inactive winding, a repulsive group, no positive eigenvalue, or
+    /// a local Hessian below [`LAMBDA_FLOOR`]).
+    companion_radius: f64,
+}
+
+/// The field's cusp groups, in component order.  Components with zero weight
+/// are invisible to `grad phi` and skipped; cored profiles (CIS with
+/// `xc > 0`, NFW, softened points) are smooth at their centre and contribute
+/// no winding.  Coincident cusps form one group whose most singular class
+/// dominates: points (summed masses) over SIS-type cusps (summed `psi0`); an
+/// exact cancellation leaves a smooth centre.
+fn cusp_groups(field: &LensField) -> Vec<CuspGroup> {
+    /// Coincident centres within this L1 distance form one group.
+    const COINCIDENT_TOL: f64 = 1e-9;
+    let cusp = |c: &Component| -> Option<(f64, bool)> {
+        match c.profile {
+            Profile::Point { mass, xc } if xc == 0.0 && mass != 0.0 => Some((mass, true)),
+            Profile::Sis { psi0 } if psi0 != 0.0 => Some((psi0, false)),
+            Profile::Cis { psi0, xc } if xc == 0.0 && psi0 != 0.0 => Some((psi0, false)),
+            _ => None,
+        }
+    };
+    let mut groups = Vec::new();
+    let mut assigned = vec![false; field.components.len()];
+    for j in 0..field.components.len() {
+        if assigned[j] {
+            continue;
+        }
+        let cj = &field.components[j];
+        let Some((w0, p0)) = cusp(cj) else { continue };
+        assigned[j] = true;
+        let mut members = vec![j];
+        let mut weights = vec![(w0, p0)];
+        for (k, ck) in field.components.iter().enumerate().skip(j + 1) {
+            if assigned[k] {
+                continue;
+            }
+            if (ck.x - cj.x).abs() + (ck.y - cj.y).abs() <= COINCIDENT_TOL
+                && let Some((w, p)) = cusp(ck)
+            {
+                members.push(k);
+                weights.push((w, p));
+                assigned[k] = true;
+            }
+        }
+        let m_sum: f64 = weights.iter().filter(|(_, p)| *p).map(|(w, _)| w).sum();
+        let p_sum: f64 = weights.iter().filter(|(_, p)| !*p).map(|(w, _)| w).sum();
+        let (weight, is_point) = if m_sum != 0.0 {
+            (m_sum, true)
+        } else if p_sum != 0.0 {
+            (p_sum, false)
+        } else {
+            continue; // exact cancellation: a smooth centre
+        };
+        let (g_s, h_s) = grad_hess_excluding(field, [cj.x, cj.y], &members);
+        let (lam_min, lam_max) = eig_range(h_s);
+        let lambda_loc = lam_min.abs().min(lam_max.abs());
+        let lambda_pos_min = if lam_min > 0.0 {
+            lam_min
+        } else if lam_max > 0.0 {
+            lam_max
+        } else {
+            0.0
+        };
+        let winding = if is_point || g_s[0].hypot(g_s[1]) < weight.abs() {
+            1
+        } else {
+            0
+        };
+        let lam = lambda_loc.max(LAMBDA_FLOOR);
+        let scale = if is_point {
+            (weight.abs() / lam).sqrt()
+        } else {
+            weight.abs() / lam
+        };
+        // Companion radius.  Along a positive-curvature direction the local
+        // companion sits within `sqrt(|w|/lambda_pos)` (the Einstein scale;
+        // the weak regime is smaller), and along a negative-curvature
+        // direction only the weak regime admits a solution, within
+        // `0.5 sqrt(|w|/|lambda|)`.  A negative semi-definite local model has
+        // no pinned companion at all (e.g. a star under a strongly defocusing
+        // macro can have no images anywhere: its winding is absorbed by the
+        // `1/|d|^2` pole).  A *repulsive* group (`weight < 0`) is skipped
+        // too: its companions (where they exist at all, `|g_s| > 2
+        // sqrt(lambda |w|)`) lie along `-g_s` at `|g_s|/lambda`, and the
+        // ladders already seed every direction.
+        let companion_radius =
+            if winding != 0 && weight > 0.0 && lambda_pos_min > 0.0 && lambda_loc >= LAMBDA_FLOOR {
+                let r = if is_point {
+                    (weight / lambda_pos_min)
+                        .sqrt()
+                        .max(0.5 * (weight / lam).sqrt())
+                } else {
+                    weight / lambda_pos_min
+                };
+                2.0 * r + 0.1
+            } else {
+                0.0
+            };
+        groups.push(CuspGroup {
+            x: cj.x,
+            y: cj.y,
+            weight,
+            is_point,
+            winding,
+            g_s,
+            lambda_loc,
+            scale,
+            companion_radius,
+        });
+    }
+    groups
+}
+
+/// Index-identity right-hand side: `sign(lambda0 lambda2) - sum_j W_j` over
+/// the field's cusp groups, i.e. `sign(lambda0 lambda2) - #(active groups)`
+/// (`W_j` is `1` for each active group whatever the weight's sign; see
+/// [`CuspGroup::winding`]).  For a generic source the sum of the Hessian
+/// signs over all images equals this (excision on the sphere: the large-circle
+/// winding of `grad phi` is `sign(lambda0 lambda2)`, and each cusp group
+/// contributes its own winding `W_j`; smooth profiles wind trivially).  A
+/// missed image *pair* that leaves the sum unchanged is caught by the
+/// per-group companion check instead.
+fn index_identity_rhs(field: &LensField, groups: &[CuspGroup]) -> i64 {
+    let mut rhs = if field.lambda0 * field.lambda2 > 0.0 { 1 } else { -1 };
+    for g in groups {
+        rhs -= g.winding;
+    }
+    rhs
+}
+
 /// Real-space geometry of a [`LensField`]: the images (solutions of the lens
 /// equation `grad phi = 0`) found by multi-start Newton, and the geometric
 /// (stationary-phase) amplification.  Each Newton step evaluates the gradient
@@ -556,102 +755,219 @@ fn real_grad_and_hess(field: &LensField, x: [f64; 2]) -> ([f64; 2], [[f64; 2]; 2
 /// complex-step derivatives in the unit tests), so the κ/γ + profile cases
 /// reuse the exact potential of the integral solver.
 ///
-/// The start grid is dense (24x24 over the component span), deterministically
-/// golden-ratio jittered (so no start lands exactly on the critical curve or a
-/// singular centre), and every converged point is verified against the lens
-/// equation.  An *aligned* 8x8 grid silently missed the faint image of the
-/// unit point mass at y = 1 — its Newton basin lay between the starts and the
-/// start at -1 sat exactly on the critical curve (`det H = 0`) — which the
-/// image-local stationary-phase estimate cannot see.  Completeness is still not
-/// *certified* for arbitrary fields: the point-mass-only entry points
-/// ([`point_mass_field_geometric_corrected`] / [`point_mass_field_hybrid`]) use
-/// the certificate-checked [`crate::images::point_mass_field_images`] finder
-/// instead.
-pub fn lens_field_images(field: &LensField) -> Vec<[f64; 2]> {
-    let g = |x: [f64; 2]| -> [f64; 2] {
-        let gr = field.gradient(&SVector::<Complex64, 2>::new(
-            Complex64::from(x[0]),
-            Complex64::from(x[1]),
-        ));
-        // phi is holomorphic in each variable and real at real arguments, so
-        // the real gradient is just the holomorphic derivative there.
-        [gr[0].re, gr[1].re]
-    };
-    let mut images: Vec<[f64; 2]> = Vec::new();
-    let span = field
-        .components
-        .iter()
-        .fold(2.0f64, |acc, c| acc.max(c.x.abs()).max(c.y.abs()));
+/// The finder is completeness-certified, with the same contract as the
+/// point-mass-only finder ([`crate::images::point_mass_field_images`]):
+///
+/// 1. Seeds: a 24x24 golden-ratio-jittered global grid over the component and
+///    macro-image extent (an *aligned* grid silently missed the faint image
+///    of the unit point mass at y = 1 — its Newton basin lay between the
+///    starts and the start at -1 sat exactly on the critical curve), the macro
+///    image centre, and Newton ladders per cusp group (the weak-field
+///    companion scale `|w|/|g_s|` and the local Einstein scale; see
+///    [`CuspGroup`]) and per profile (its deflection scale).
+/// 2. Every candidate is residual-verified (`|grad phi|^2 <= 1e-16 (1+|x|^2)`)
+///    and deduplicated.
+/// 3. Certificate 1: non-degeneracy (`|det H|` at or above the caustic floor
+///    `1e-8`; at an exact caustic the image set is not discrete — e.g. the
+///    whole Einstein ring at `beta = 0` — and the stationary-phase sum is
+///    undefined) and the index identity ([`index_identity_rhs`]).
+/// 4. Certificate 2: every cusp group with an active winding and a positive
+///    local smooth-Hessian eigenvalue owns an image within its local scale
+///    ([`CuspGroup::companion_radius`]) — this catches a missed image *pair*,
+///    which the index sum alone cannot see.  A locally defocusing cusp (no
+///    positive eigenvalue) has no pinned companion scale; the index identity
+///    still applies, and an empty image set is legal exactly when the
+///    identity allows it (see the note at the end of the search).
+///
+/// A violated certificate is an error, never a silently short list.
+pub fn lens_field_images(field: &LensField) -> Result<Vec<[f64; 2]>> {
+    let groups = cusp_groups(field);
+    // Start-grid extent: component centres, the macro image position, and the
+    // cusp image scales.
+    let mut span = 2.0f64;
+    for c in &field.components {
+        span = span.max(c.x.abs()).max(c.y.abs());
+    }
+    span = span
+        .max((field.beta[0] / field.lambda0).abs())
+        .max((field.beta[1] / field.lambda2).abs());
+    for g in &groups {
+        span = span.max(g.x.abs() + g.scale).max(g.y.abs() + g.scale);
+    }
     let span = span + 2.0;
-    // Dense, deterministically jittered start grid.  A coarse *aligned* grid
-    // has a silent failure mode: for the unit point mass at y = 1 the faint
-    // image at -0.618 has its Newton basin between the starts -1 and 0, and
-    // the start exactly at -1 sits on the critical curve (det H = 0), so the
-    // old 8x8 grid missed it entirely.  The golden-ratio jitter moves every
-    // start off the degenerate lines while keeping the result reproducible.
-    let n = 24;
-    for i in 0..=n {
-        for j in 0..=n {
-            let k = i * (n + 1) + j;
+    // (a) Global grid, deterministically golden-ratio jittered so no start
+    // sits exactly on a critical curve or a singular centre.
+    const GRID: usize = 24;
+    let mut seeds: Vec<[f64; 2]> = Vec::new();
+    for i in 0..=GRID {
+        for j in 0..=GRID {
+            let k = i * (GRID + 1) + j;
             let jit = |s: usize| ((s as f64 + 1.0) * 0.618_033_988_749_895).fract() - 0.5;
-            let mut x = [
-                -span + 2.0 * span * (i as f64 + 0.6 * jit(k)) / n as f64,
-                -span + 2.0 * span * (j as f64 + 0.6 * jit(k + 7)) / n as f64,
-            ];
-            let mut ok = false;
-            for _ in 0..60 {
-                let (gx, jx) = real_grad_and_hess(field, x);
-                let det = jx[0][0] * jx[1][1] - jx[0][1] * jx[1][0];
-                if !det.is_finite() || det.abs() < 1e-14 {
-                    break;
+            seeds.push([
+                -span + 2.0 * span * (i as f64 + 0.6 * jit(k)) / GRID as f64,
+                -span + 2.0 * span * (j as f64 + 0.6 * jit(k + 7)) / GRID as f64,
+            ]);
+        }
+    }
+    // (b) The macro image centre.
+    seeds.push([field.beta[0] / field.lambda0, field.beta[1] / field.lambda2]);
+    // (c) Newton ladders.  Angle 0 of each ring points along the local smooth
+    // gradient (the weak-field companion direction).
+    const RADII: [f64; 6] = [0.125, 0.25, 0.5, 1.0, 2.0, 4.0];
+    let mut ring = |cx: f64, cy: f64, r: f64, dir: [f64; 2]| {
+        for k in 0..8 {
+            let (s, c) = (k as f64 * std::f64::consts::PI / 4.0).sin_cos();
+            seeds.push([
+                cx + r * (c * dir[0] - s * dir[1]),
+                cy + r * (s * dir[0] + c * dir[1]),
+            ]);
+        }
+    };
+    let direction = |v: [f64; 2]| {
+        let n = v[0].hypot(v[1]);
+        if n > 1e-12 { [v[0] / n, v[1] / n] } else { [1.0, 0.0] }
+    };
+    for g in &groups {
+        let dir = direction(g.g_s);
+        let lam = g.lambda_loc.max(LAMBDA_FLOOR);
+        let weak = if g.is_point {
+            g.weight.abs() / g.g_s[0].hypot(g.g_s[1]).max((lam * g.weight.abs()).sqrt())
+        } else {
+            g.scale
+        };
+        for base in [weak, g.scale] {
+            if base.is_finite() && base > 0.0 {
+                for s in RADII {
+                    ring(g.x, g.y, base * s, dir);
                 }
-                let dx = [
-                    (jx[1][1] * gx[0] - jx[0][1] * gx[1]) / det,
-                    (-jx[1][0] * gx[0] + jx[0][0] * gx[1]) / det,
-                ];
-                x[0] -= dx[0];
-                x[1] -= dx[1];
-                if !(x[0].is_finite() && x[1].is_finite()) {
-                    break;
-                }
-                if dx[0].abs() + dx[1].abs() < 1e-13 {
-                    ok = true;
-                    break;
-                }
-            }
-            // Verify: a small Newton step is not enough near a degenerate
-            // Jacobian; the point must actually solve the lens equation.
-            if ok {
-                let gx = g(x);
-                if gx[0] * gx[0] + gx[1] * gx[1] > 1e-16 * (1.0 + x[0] * x[0] + x[1] * x[1]) {
-                    ok = false;
-                }
-            }
-            if ok && !images.iter().any(|p| (p[0] - x[0]).abs() + (p[1] - x[1]).abs() < 1e-7) {
-                images.push(x);
             }
         }
     }
-    images
+    for (k, c) in field.components.iter().enumerate() {
+        if c.profile.is_zero() {
+            continue;
+        }
+        // Deflection scale of a smooth profile (cusp components are covered by
+        // the group ladders above).
+        let (g_s, h_s) = {
+            let mut skip = vec![k];
+            skip.extend((0..field.components.len()).filter(|&q| {
+                q != k
+                    && (field.components[q].x - c.x).abs()
+                        + (field.components[q].y - c.y).abs()
+                        <= 1e-9
+            }));
+            grad_hess_excluding(field, [c.x, c.y], &skip)
+        };
+        let lam = min_abs_eigenvalue(h_s).max(LAMBDA_FLOOR);
+        let base = match c.profile {
+            Profile::Point { mass, xc } if xc > 0.0 => mass.abs() / (xc * lam),
+            Profile::Point { .. } | Profile::Sis { .. } => continue, // cusp
+            Profile::Cis { xc: 0.0, .. } => continue,                // cusp (== SIS)
+            Profile::Cis { psi0, .. } => psi0.abs() / lam,
+            Profile::Nfw { psi0, xs } => (psi0.abs() / lam).max(xs),
+        };
+        let dir = direction(g_s);
+        if base.is_finite() && base > 0.0 {
+            for s in RADII {
+                ring(c.x, c.y, base * s, dir);
+            }
+        }
+    }
+    // Newton on the real lens equation, residual-verified, deduplicated.
+    let mut images: Vec<[f64; 2]> = Vec::new();
+    for seed in seeds {
+        let mut x = seed;
+        let mut ok = false;
+        for _ in 0..60 {
+            let (gx, jx) = real_grad_and_hess(field, x);
+            let det = jx[0][0] * jx[1][1] - jx[0][1] * jx[1][0];
+            if !det.is_finite() || det.abs() < 1e-14 {
+                break;
+            }
+            let dx = [
+                (jx[1][1] * gx[0] - jx[0][1] * gx[1]) / det,
+                (-jx[1][0] * gx[0] + jx[0][0] * gx[1]) / det,
+            ];
+            x[0] -= dx[0];
+            x[1] -= dx[1];
+            if !(x[0].is_finite() && x[1].is_finite()) {
+                break;
+            }
+            if dx[0].abs() + dx[1].abs() < 1e-13 {
+                ok = true;
+                break;
+            }
+        }
+        // Verify: a small Newton step is not enough near a degenerate
+        // Jacobian; the point must actually solve the lens equation.
+        if ok {
+            let (gx, _) = real_grad_and_hess(field, x);
+            if gx[0] * gx[0] + gx[1] * gx[1] > 1e-16 * (1.0 + x[0] * x[0] + x[1] * x[1]) {
+                ok = false;
+            }
+        }
+        if ok && !images.iter().any(|p| (p[0] - x[0]).abs() + (p[1] - x[1]).abs() < 1e-7) {
+            images.push(x);
+        }
+    }
+    // No hard empty-set error: a strongly defocusing macro with a point
+    // component can have *no* images at all (the cusp's winding is absorbed
+    // by its `1/|d|^2` pole; e.g. kappa = 1.5, gamma = 0.2, a unit point at
+    // the centre), and an empty set is then the correct answer.  The
+    // certificate below still rejects a wrong empty set: the index identity
+    // fails unless `rhs == 0`, and every winding-active cusp with a positive
+    // local eigenvalue must own a nearby image.
+    // Certificate 1: non-degeneracy and the index identity.
+    const CAUSTIC_DET: f64 = 1e-8;
+    let mut n_pos = 0i64;
+    let mut n_neg = 0i64;
+    for x in &images {
+        let (_, h) = real_grad_and_hess(field, *x);
+        let det = h[0][0] * h[1][1] - h[0][1] * h[1][0];
+        if !det.is_finite() || det.abs() < CAUSTIC_DET {
+            return Err(Error::DegenerateImage);
+        }
+        if det > 0.0 {
+            n_pos += 1;
+        } else {
+            n_neg += 1;
+        }
+    }
+    let rhs = index_identity_rhs(field, &groups);
+    if n_pos - n_neg != rhs {
+        return Err(Error::ImageSearch(
+            "index identity violated (an image was likely missed)",
+        ));
+    }
+    // Certificate 2: every winding-active cusp group owns a nearby image.
+    for g in &groups {
+        if g.companion_radius > 0.0
+            && !images
+                .iter()
+                .any(|x| (x[0] - g.x).hypot(x[1] - g.y) <= g.companion_radius)
+        {
+            return Err(Error::ImageSearch(
+                "a cusp component has no image nearby (a companion image was likely missed)",
+            ));
+        }
+    }
+    Ok(images)
 }
 
 /// Stationary-phase (geometric-optics) amplification of a [`LensField`] —
 /// exact as `omega -> infinity` away from caustics; O(#images).
 ///
-/// Images come from [`lens_field_images`] (residual-verified multi-start
-/// Newton, not completeness-certified for arbitrary fields) and degenerate
-/// images (`|det H| < 1e-12`, caustics) are skipped; for point-mass-only
-/// fields [`crate::images::geometric_amplification`] uses the
-/// certificate-checked finder and reports caustics explicitly.
-pub fn lens_field_geometric(field: &LensField, omega: f64) -> Complex64 {
+/// Images come from the completeness-certified [`lens_field_images`]; a
+/// degenerate image (an exact caustic) is reported as
+/// [`Error::DegenerateImage`], never silently dropped.  For point-mass-only
+/// fields [`crate::images::geometric_amplification`] is equivalent.
+pub fn lens_field_geometric(field: &LensField, omega: f64) -> Result<Complex64> {
     let mut f = Complex64::new(0.0, 0.0);
-    for x in lens_field_images(field) {
+    for x in lens_field_images(field)? {
         let (_, hess) = real_grad_and_hess(field, x);
         let det = hess[0][0] * hess[1][1] - hess[0][1] * hess[1][0];
         let tr = hess[0][0] + hess[1][1];
-        if !det.is_finite() || det.abs() < 1e-12 {
-            continue; // at a caustic: the asymptotic form breaks down
-        }
         let mu = 1.0 / det;
         let n = if det < 0.0 {
             0.5
@@ -665,7 +981,7 @@ pub fn lens_field_geometric(field: &LensField, omega: f64) -> Complex64 {
         f += Complex64::from(mu.abs().sqrt())
             * (Complex64::i() * (omega * phi) - Complex64::i() * std::f64::consts::PI * n).exp();
     }
-    f
+    Ok(f)
 }
 
 /// Analytic continuation of the phase Hessian `d_a d_b phi` as a function of
@@ -919,21 +1235,27 @@ pub struct GeometricCorrected {
 /// `omega^-1` (validated on the Airy integral and on the point mass against
 /// the Nakamura-Deguchi closed form).
 ///
-/// `None` when the asymptotic form cannot be trusted: no images, or an image
-/// at a caustic (`|det H| < 1e-12`).  The caller falls back to the exact RC
-/// engine.
+/// `Ok(None)` when the asymptotic form cannot be trusted (a caustic, i.e.
+/// [`Error::DegenerateImage`]); any other finder error (a violated
+/// completeness certificate) propagates — it is a bug, not a caustic.  The
+/// caller falls back to the exact RC engine.
 pub fn lens_field_geometric_corrected(
     field: &LensField,
     omega: f64,
-) -> Option<GeometricCorrected> {
-    let images = lens_field_images(field);
+) -> Result<Option<GeometricCorrected>> {
+    let images = match lens_field_images(field) {
+        Ok(images) => images,
+        // A caustic: `None` is this function's documented "asymptotic form
+        // invalid" answer (mirrors `point_mass_field_geometric_corrected`).
+        Err(Error::DegenerateImage) => return Ok(None),
+        Err(e) => return Err(e),
+    };
     let n = images.len();
-    let (value, error) = sp_corrected_sum(field, &images, omega)?;
-    Some(GeometricCorrected {
+    Ok(sp_corrected_sum(field, &images, omega).map(|(value, error)| GeometricCorrected {
         value,
         error,
         images: n,
-    })
+    }))
 }
 
 /// Which engine a [`lens_field_hybrid`] call used.
@@ -992,7 +1314,12 @@ pub fn lens_field_hybrid(
     interrupt: Option<InterruptHook>,
 ) -> Result<HybridOutput> {
     let fs = free_space_2d(omega);
-    if let Some(g) = lens_field_geometric_corrected(field, omega)
+    // The geometric branch needs a trustworthy image set.  A degenerate
+    // (caustic) or certificate-failed set falls through to the exact RC
+    // engine below — caustics are its home turf — so any finder error maps to
+    // the empty set (= no geometric branch) rather than propagating (mirrors
+    // `point_mass_field_hybrid`).
+    if let Ok(Some(g)) = lens_field_geometric_corrected(field, omega)
         && g.error * fs.norm() <= tol
     {
         return Ok(HybridOutput {
@@ -1114,6 +1441,139 @@ mod tests {
         Component { x, y, profile: Profile::Point { mass: m, xc: 0.0 } }
     }
 
+    /// O1, the completeness-certificate battery (2026-10-19): the finder must
+    /// pass its own certificate on every family, and the certificate's RHS —
+    /// the index identity `#(det H>0) - #(det H<0) = sign(l0*l2) - sum W_j`
+    /// with the per-cusp-group windings of [`cusp_groups`] — must match the
+    /// hand-derived table (pinned here *independently* of the implementation):
+    /// points wind always, SIS/CIS{xc=0} only when the source is inside their
+    /// Einstein ring (`|g_s| < |psi0|`), cored/smooth profiles never, and
+    /// coincident cusps group with the most singular class dominating.
+    ///
+    /// The 5-star stock and the close pair are the cases the old grid silently
+    /// missed (their faint companions); the certificate now demands them.
+    #[test]
+    fn finder_certificate_battery() {
+        // (name, field, hand-derived RHS, pinned image count)
+        let cases: Vec<(&str, LensField, i64, usize)> = vec![
+            ("macro + k=0.3 g=0.2", LensField::new([0.4, -0.3], 0.3, 0.2, 0.0, vec![]).unwrap(), 1, 1),
+            ("macro - saddle k=0.5 g=0.7", LensField::new([0.4, -0.3], 0.5, 0.7, 0.0, vec![]).unwrap(), -1, 1),
+            ("macro + k=1.5 g=0.2", LensField::new([0.4, -0.3], 1.5, 0.2, 0.0, vec![]).unwrap(), 1, 1),
+            ("macro + k=0.45 g=0.5", LensField::new([0.4, -0.3], 0.45, 0.5, 0.0, vec![]).unwrap(), 1, 1),
+            ("1 point k=0", LensField::new([0.5, 0.0], 0.0, 0.0, 0.0, vec![point(0.0, 0.0, 1.0)]).unwrap(), 0, 2),
+            ("1 point k=0.3", LensField::new([0.5, 0.0], 0.3, 0.0, 0.0, vec![point(0.0, 0.0, 1.0)]).unwrap(), 0, 2),
+            ("1 point k=0.9", LensField::new([0.5, 0.0], 0.9, 0.0, 0.0, vec![point(0.0, 0.0, 1.0)]).unwrap(), 0, 2),
+            ("1 point k=1.5 defocusing (no images)", LensField::new([0.3, 0.1], 1.5, 0.2, 0.0, vec![point(0.0, 0.0, 1.0)]).unwrap(), 0, 0),
+            ("1 point k=1.5 defocusing, light star", LensField::new([0.3, 0.1], 1.5, 0.2, 0.0, vec![point(0.0, 0.0, 0.01)]).unwrap(), 0, 2),
+            ("2 points k=0", LensField::new([0.2, 0.1], 0.0, 0.0, 0.0, vec![point(-0.8, 0.5, 0.6), point(0.9, -0.4, 0.4)]).unwrap(), -1, 3),
+            ("2 points k=0.3 g=0.2", LensField::new([0.2, 0.1], 0.3, 0.2, 0.0, vec![point(-0.8, 0.5, 0.6), point(0.9, -0.4, 0.4)]).unwrap(), -1, 3),
+            ("SIS psi0=1 (inside)", LensField::new([0.5, 0.0], 0.0, 0.0, 0.0, vec![Component { x: 0.0, y: 0.0, profile: Profile::Sis { psi0: 1.0 } }]).unwrap(), 0, 2),
+            ("SIS psi0=0.1 (outside)", LensField::new([0.5, 0.0], 0.0, 0.0, 0.0, vec![Component { x: 0.0, y: 0.0, profile: Profile::Sis { psi0: 0.1 } }]).unwrap(), 1, 1),
+            ("SIS psi0=0.1 (inside)", LensField::new([0.05, 0.0], 0.0, 0.0, 0.0, vec![Component { x: 0.0, y: 0.0, profile: Profile::Sis { psi0: 0.1 } }]).unwrap(), 0, 2),
+            ("SIS psi0=5 (strong)", LensField::new([0.5, 0.0], 0.0, 0.0, 0.0, vec![Component { x: 0.0, y: 0.0, profile: Profile::Sis { psi0: 5.0 } }]).unwrap(), 0, 2),
+            ("SIS + saddle macro", LensField::new([0.3, 0.1], 0.5, 0.7, 0.0, vec![Component { x: 0.0, y: 0.0, profile: Profile::Sis { psi0: 1.0 } }]).unwrap(), -2, 2),
+            ("SIS + defocusing macro", LensField::new([0.3, 0.1], 1.5, 0.2, 0.0, vec![Component { x: 0.0, y: 0.0, profile: Profile::Sis { psi0: 1.0 } }]).unwrap(), 0, 0),
+            ("CIS xc=0 psi0=0.1 (outside)", LensField::new([0.5, 0.0], 0.0, 0.0, 0.0, vec![Component { x: 0.0, y: 0.0, profile: Profile::Cis { psi0: 0.1, xc: 0.0 } }]).unwrap(), 1, 1),
+            ("CIS xc=0.2", LensField::new([0.5, 0.0], 0.0, 0.0, 0.0, vec![Component { x: 0.0, y: 0.0, profile: Profile::Cis { psi0: 1.0, xc: 0.2 } }]).unwrap(), 1, 1),
+            ("NFW psi0=1 xs=0.5", LensField::new([0.5, 0.0], 0.0, 0.0, 0.0, vec![Component { x: 0.0, y: 0.0, profile: Profile::Nfw { psi0: 1.0, xs: 0.5 } }]).unwrap(), 1, 1),
+            ("softened point xc=0.3", LensField::new([0.5, 0.0], 0.0, 0.0, 0.0, vec![Component { x: 0.0, y: 0.0, profile: Profile::Point { mass: 1.0, xc: 0.3 } }]).unwrap(), 1, 3),
+            ("weak softened point beta=0", LensField::new([0.0, 0.0], 0.0, 0.0, 0.0, vec![Component { x: 0.0, y: 0.0, profile: Profile::Point { mass: 0.01, xc: 0.3 } }]).unwrap(), 1, 1),
+            ("2 close points m=1,1e-3", LensField::new([0.5, 0.0], 0.0, 0.0, 0.0, vec![point(0.0, 0.0, 1.0), point(0.01, 0.0, 0.001)]).unwrap(), -1, 3),
+            ("coincident points m=1,0.5", LensField::new([0.5, 0.0], 0.0, 0.0, 0.0, vec![point(0.0, 0.0, 1.0), point(0.0, 0.0, 0.5)]).unwrap(), 0, 2),
+            ("coincident point(1)+SIS(0.5)", LensField::new([0.5, 0.0], 0.0, 0.0, 0.0, vec![point(0.0, 0.0, 1.0), Component { x: 0.0, y: 0.0, profile: Profile::Sis { psi0: 0.5 } }]).unwrap(), 0, 2),
+            ("coincident SIS+SIS 0.3,0.3", LensField::new([0.5, 0.0], 0.0, 0.0, 0.0, vec![Component { x: 0.0, y: 0.0, profile: Profile::Sis { psi0: 0.3 } }, Component { x: 0.0, y: 0.0, profile: Profile::Sis { psi0: 0.3 } }]).unwrap(), 0, 2),
+            ("SIS + point", LensField::new([0.5, 0.0], 0.0, 0.0, 0.0, vec![Component { x: 0.0, y: 0.0, profile: Profile::Sis { psi0: 0.5 } }, point(1.0, 0.3, 0.2)]).unwrap(), -1, 3),
+            ("negative point m=-1 (no images)", LensField::new([0.5, 0.0], 0.0, 0.0, 0.0, vec![point(0.0, 0.0, -1.0)]).unwrap(), 0, 0),
+            ("negative SIS psi0=-1 (no images)", LensField::new([0.5, 0.0], 0.0, 0.0, 0.0, vec![Component { x: 0.0, y: 0.0, profile: Profile::Sis { psi0: -1.0 } }]).unwrap(), 0, 0),
+            ("negative SIS psi0=-0.1 (outside)", LensField::new([0.5, 0.0], 0.0, 0.0, 0.0, vec![Component { x: 0.0, y: 0.0, profile: Profile::Sis { psi0: -0.1 } }]).unwrap(), 1, 1),
+            ("negative + positive point", LensField::new([0.5, 0.2], 0.0, 0.0, 0.0, vec![point(0.0, 0.0, -0.5), point(1.0, 0.0, 0.5)]).unwrap(), -1, 1),
+            ("5-star stock k=0", LensField::new([0.5, 0.2], 0.0, 0.0, 0.0, vec![
+                point(0.75057279962800205, 2.3832828058174531, 0.05),
+                point(1.6541141414711609, -1.6487568600564488, 0.05),
+                point(-1.1990022905326474, 2.2413206723775714, 0.05),
+                point(-2.9684081726065514, 1.9273705102965977, 0.05),
+                point(1.7824165725122771, -0.19239028293767557, 0.05),
+            ]).unwrap(), -4, 6),
+        ];
+        for (name, f, want_rhs, want_n) in cases {
+            let groups = cusp_groups(&f);
+            let rhs = index_identity_rhs(&f, &groups);
+            assert_eq!(rhs, want_rhs, "{name}: hand-derived RHS");
+            let ims = lens_field_images(&f)
+                .unwrap_or_else(|e| panic!("{name}: finder failed its certificate: {e}"));
+            assert_eq!(ims.len(), want_n, "{name}: image count");
+            let (mut np, mut nn) = (0i64, 0i64);
+            for x in &ims {
+                let (_, h) = real_grad_and_hess(&f, *x);
+                let det = h[0][0] * h[1][1] - h[0][1] * h[1][0];
+                assert!(det.abs() >= 1e-8, "{name}: degenerate image");
+                if det > 0.0 {
+                    np += 1;
+                } else {
+                    nn += 1;
+                }
+            }
+            assert_eq!(np - nn, rhs, "{name}: index sum vs RHS");
+        }
+    }
+
+    /// The close-pair light star's companion is the case the old grid missed;
+    /// its local scale (set by the heavy star's Hessian, not the macro) must
+    /// pin it: the companion sits at `~m/|g_s|` and the group's companion
+    /// radius must cover it.
+    #[test]
+    fn close_pair_companion_radius_covers_the_faint_image() {
+        let f = LensField::new(
+            [0.5, 0.0],
+            0.0,
+            0.0,
+            0.0,
+            vec![point(0.0, 0.0, 1.0), point(0.01, 0.0, 0.001)],
+        )
+        .unwrap();
+        let groups = cusp_groups(&f);
+        let light = groups.iter().find(|g| g.x == 0.01).expect("light group");
+        assert!(light.is_point && light.companion_radius > 0.0);
+        let ims = lens_field_images(&f).unwrap();
+        let d = ims
+            .iter()
+            .map(|x| (x[0] - light.x).hypot(x[1] - light.y))
+            .fold(f64::INFINITY, f64::min);
+        assert!(d <= light.companion_radius, "companion at {d:e} > radius {:e}", light.companion_radius);
+    }
+
+    /// The general finder on the getting-started 40-mass stock must reproduce
+    /// the point-mass-only finder (independent seed logic and certificate) and
+    /// the pinned external references of `crate::images`: 41 images, 40 of
+    /// them saddles, and the pinned F_geo(2).
+    #[test]
+    fn lens_field_finder_matches_point_mass_finder_on_40_masses() {
+        use crate::images::tests::{NOTEBOOK_BETA, NOTEBOOK_FIELD};
+        let lenses: Vec<(f64, f64, f64)> = NOTEBOOK_FIELD.to_vec();
+        let lf = LensField::new(
+            NOTEBOOK_BETA,
+            0.0,
+            0.0,
+            0.0,
+            lenses.iter().map(|&(x, y, m)| point(x, y, m)).collect(),
+        )
+        .unwrap();
+        let ims = lens_field_images(&lf).unwrap();
+        let poly = crate::images::point_mass_field_images(NOTEBOOK_BETA, &lenses).unwrap();
+        assert_eq!(ims.len(), 41);
+        assert_eq!(poly.len(), 41);
+        for p in &poly {
+            let best = ims
+                .iter()
+                .map(|q| (q[0] - p[0]).abs() + (q[1] - p[1]).abs())
+                .fold(f64::INFINITY, f64::min);
+            assert!(best < 1e-6, "image {p:?} not matched (closest {best:e})");
+        }
+        let f = lens_field_geometric(&lf, 2.0).unwrap();
+        let want = Complex64::new(-1.458_607_255_602_454_0, 0.459_269_484_456_860_0);
+        assert!((f - want).norm() < 1e-8, "F_geo(2) = {f} vs {want}");
+    }
+
     /// Macro-only (no components): the exact Gaussian, for every macro-image
     /// type including the saddle cases (`lambda < 0`) that a real-box method
     /// cannot represent (P0 finding of record).
@@ -1217,7 +1677,7 @@ mod tests {
             lenses.iter().map(|&(x, y, m)| point(x, y, m)).collect(),
         )
         .unwrap();
-        let ims = lens_field_images(&lf);
+        let ims = lens_field_images(&lf).unwrap();
         let poly = crate::images::point_mass_field_images(beta, &lenses).unwrap();
         assert_eq!(ims.len(), poly.len(), "image count: {ims:?} vs {poly:?}");
         for p in &poly {
@@ -1228,9 +1688,37 @@ mod tests {
             assert!(best < 1e-6, "image {p:?} not matched (closest {best:e})");
         }
         let omega = 100.0;
-        let a = lens_field_geometric(&lf, omega);
+        let a = lens_field_geometric(&lf, omega).unwrap();
         let b = crate::images::geometric_amplification(beta, &lenses, omega).unwrap();
         assert!((a - b).norm() / b.norm() < 1e-5, "{a} vs {b}");
+    }
+
+    /// A caustic (beta = 0 for an isolated point mass) has no discrete
+    /// geometric sum: the finder reports `DegenerateImage`, `geometric`
+    /// propagates it (never a silent zero), `geometric_corrected` answers
+    /// `Ok(None)` (its documented "asymptotic form invalid"), and the hybrid
+    /// falls back to the exact RC — the point-mass-sibling contract, now for
+    /// general fields.
+    #[test]
+    fn lens_field_caustic_reported_not_silent() {
+        let lf = LensField::new([0.0, 0.0], 0.0, 0.0, 0.0, vec![point(0.0, 0.0, 1.0)]).unwrap();
+        let omega = 2.0;
+        assert!(matches!(
+            lens_field_images(&lf).unwrap_err(),
+            Error::DegenerateImage
+        ));
+        assert!(matches!(
+            lens_field_geometric(&lf, omega).unwrap_err(),
+            Error::DegenerateImage
+        ));
+        assert!(lens_field_geometric_corrected(&lf, omega).unwrap().is_none());
+        let h = lens_field_hybrid(&lf, omega, 1e-3, None).unwrap();
+        assert_eq!(h.method, HybridMethod::Rc);
+        let direct = crate::phases::PointMassField { beta: [0.0, 0.0], lenses: vec![(0.0, 0.0, 1.0)] };
+        let exact =
+            crate::slice::slice_field(&direct, &SliceConfig { omega, ..Default::default() })
+                .unwrap();
+        assert!((h.value - exact.value).norm() / exact.value.norm() < 1e-13);
     }
 
     /// A caustic (beta = 0 for an isolated point mass) has no discrete
@@ -1260,14 +1748,14 @@ mod tests {
     #[test]
     fn geometric_macro_only_one_image() {
         let lf = LensField::new([0.4, -0.3], 0.3, 0.2, 0.0, vec![]).unwrap();
-        let ims = lens_field_images(&lf);
+        let ims = lens_field_images(&lf).unwrap();
         assert_eq!(ims.len(), 1, "{ims:?}");
         let (x0, x2) = (
             lf.beta[0] / lf.lambda0,
             lf.beta[1] / lf.lambda2,
         );
         assert!((ims[0][0] - x0).abs() < 1e-9 && (ims[0][1] - x2).abs() < 1e-9);
-        let f = lens_field_geometric(&lf, 1e6);
+        let f = lens_field_geometric(&lf, 1e6).unwrap();
         let want = (1.0 / (lf.lambda0 * lf.lambda2)).abs().sqrt();
         assert!((f.norm() - want).abs() < 1e-6, "|F| {} vs {want}", f.norm());
     }
