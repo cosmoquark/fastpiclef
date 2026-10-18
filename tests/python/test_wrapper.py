@@ -70,6 +70,41 @@ def test_sweep():
     assert all(e >= 0 for e in errs)
 
 
+def test_sweep_rc_matches_thimble():
+    # The batched RC sweep (shared exact contours per band) vs the
+    # per-frequency thimble: both exact, so they must agree at machine
+    # precision.  Covers the three rational lens classes and the input guards.
+    lens = fpl.RationalLens(beta=-0.72, kappa=-2.0)
+    omegas = [0.7, 1.0, 1.5, 2.1, 3.0, 4.4, 6.0, 8.5, 13.0, 21.0]
+    amps_rc, errs_rc = lens.sweep(omegas, method="rc")
+    amps_th, _ = lens.sweep(omegas, method="thimble")
+    assert len(amps_rc) == len(errs_rc) == len(omegas)
+    for a, b in zip(amps_rc, amps_th):
+        assert abs(a - b) <= 1e-10 * max(1.0, abs(b)), (a, b)
+    assert all(math.isfinite(e) and e >= 0 for e in errs_rc)
+    simg = fpl.SimGLens(beta=0.4, kappa=1.0, kmax=2)
+    amps_s, _ = simg.sweep(omegas, method="rc")
+    assert len(amps_s) == len(omegas)
+    custom = fpl.CustomRationalLens(
+        beta=-0.72, kappa=1.0, num=[-2 + 0j], den=[1 + 0j, 0j, 1 + 0j]
+    )
+    amps_c, _ = custom.sweep(omegas, method="rc")
+    for a, b in zip(amps_c, amps_rc):
+        assert abs(a - b) <= 1e-10 * max(1.0, abs(b)), (a, b)
+    # rejected: empty grid, bad band ratio, unknown method
+    for call in [
+        lambda: lens.sweep([], method="rc"),
+        lambda: lens.sweep(omegas, method="rc", band_ratio=1.0),
+        lambda: lens.sweep(omegas, method="nope"),
+    ]:
+        try:
+            call()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("expected ValueError for bad sweep input")
+
+
 def test_errors():
     a = fpl.AiryPhase(y=1.0)
     for bad in [dict(omega=-1.0), dict(omega=1.0, method="nope")]:
@@ -85,6 +120,7 @@ def test_errors():
         lambda: f.map([], [0.0], omega=1.0),
         lambda: f.map([0.0], [], omega=1.0),
         lambda: fpl.LensField([], kappa=0.3, gamma1=0.7),
+        lambda: fpl.RationalLens(beta=0.0, kappa=-2.0).sweep([]),
     ]:
         try:
             call()

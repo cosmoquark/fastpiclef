@@ -9,8 +9,8 @@
 
 use fast_picard_lefshetz_integral_code::phases::{CustomRationalLens, PointMassField, RationalLens, SimGLens};
 use fast_picard_lefshetz_integral_code::{
-    Error, FieldBatch, InterruptHook, SliceConfig, ThimbleConfig, ThimbleSolver, rc_1d_batch,
-    slice_field, slice_field_batch,
+    Error, FieldBatch, InterruptHook, RationalPhase, SliceConfig, ThimbleConfig, ThimbleSolver,
+    rc_1d_batch, rc_1d_sweep, slice_field, slice_field_batch,
 };
 use num_complex::Complex64;
 
@@ -380,6 +380,245 @@ fn rc1d_rejects_bad_lenses() {
     // omega <= 0
     let good = RationalLens { beta: 0.0, kappa: -2.0 };
     assert!(rc_1d_batch(&good, &[0.0], 0.0, &cfg).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// 1D frequency sweep (`rc_1d_sweep`)
+// ---------------------------------------------------------------------------
+
+/// The per-frequency thimble for one lens and grid — the production
+/// machine-precision reference `(value, error)`.
+fn thimble_sweep<M: RationalPhase>(lens: &M, omegas: &[f64]) -> Vec<(Complex64, f64)> {
+    omegas
+        .iter()
+        .map(|&w| {
+            let out =
+                ThimbleSolver::new_rational(lens, ThimbleConfig { omega: w, ..Default::default() })
+                    .run()
+                    .unwrap();
+            (out.value, out.error)
+        })
+        .collect()
+}
+
+/// One sweep against the thimble, entry by entry: agreement, RC-budget
+/// tightness, and the sum-of-budgets cover check.  Each method's reported
+/// error bounds its own deviation — the RC's is tight (see
+/// [`rc1d_sweep_budget_covers_contour_family`]) while the thimble's is
+/// deliberately loose at low omega (1e-9..1e-10 at omega <= 1), so their sum
+/// bounds the difference; where both are tight the check bites.
+fn assert_sweep_matches_thimble(
+    name: &str,
+    vals: &[Complex64],
+    errs: &[f64],
+    thim: &[(Complex64, f64)],
+) {
+    let mut scale = 0.0f64;
+    for (t, _) in thim {
+        scale = scale.max(t.norm());
+    }
+    for i in 0..vals.len() {
+        let d = (vals[i] - thim[i].0).norm();
+        let allow = 8.0 * f64::EPSILON * vals[i].norm();
+        assert!(
+            errs[i] + thim[i].1 + allow >= d,
+            "{name} [{i}]: budgets {:.3e} (rc) + {:.3e} (thimble) do not cover \
+             the difference {:.3e}",
+            errs[i],
+            thim[i].1,
+            d
+        );
+        assert!(errs[i] < 1e-9 * scale, "{name} [{i}]: loose budget {:.3e}", errs[i]);
+    }
+    let mut worst = 0.0f64;
+    for i in 0..vals.len() {
+        worst = worst.max((vals[i] - thim[i].0).norm() / scale);
+    }
+    assert!(worst < 1e-11, "{name}: sweep vs thimble worst {worst:.3e}");
+}
+
+#[test]
+fn rc1d_sweep_matches_thimble_on_uniform_and_jittered_omegas() {
+    // A single lens across a *uniform* frequency grid (n >= 8: the re-anchored
+    // twiddle recurrence, one band) and a jittered log-spaced grid up to
+    // omega ~ 270 (several bands, exact sincos); every entry against the
+    // per-frequency thimble.
+    let lens = RationalLens { beta: -0.72, kappa: -2.0 };
+    let cfg = SliceConfig { omega: 1.0, ..Default::default() };
+    let uniform: Vec<f64> = (0..12).map(|i| 1.0 + 0.5 * i as f64).collect();
+    let jittered: Vec<f64> = (0..12)
+        .map(|i| 0.7 * 1.7f64.powi(i) * (1.0 + 0.13 * (2.3 * i as f64).sin()))
+        .collect();
+    for (name, omegas) in [("uniform", uniform), ("jittered log", jittered)] {
+        let (vals, errs) = rc_1d_sweep(&lens, &omegas, &cfg).unwrap();
+        assert_eq!(vals.len(), omegas.len());
+        let thim = thimble_sweep(&lens, &omegas);
+        assert_sweep_matches_thimble(name, &vals, &errs, &thim);
+    }
+}
+
+#[test]
+fn rc1d_sweep_matches_batch_across_bands() {
+    // The sweep's banded shared contour must reproduce the single-frequency
+    // batch (the already-validated construction) on both a uniform grid
+    // (recurrence path, one band) and a jittered multi-band grid, for two
+    // lens families.
+    let cfg = SliceConfig { omega: 1.0, ..Default::default() };
+    let uniform: Vec<f64> = (0..12).map(|i| 1.0 + 0.5 * i as f64).collect();
+    let jittered: Vec<f64> = (0..12)
+        .map(|i| 0.7 * 1.7f64.powi(i) * (1.0 + 0.13 * (2.3 * i as f64).sin()))
+        .collect();
+    let rl = RationalLens { beta: -0.72, kappa: -2.0 };
+    let sg = SimGLens { beta: 0.4, kappa: 1.0, kmax: 2 };
+    for omegas in [&uniform, &jittered] {
+        let (sv, _) = rc_1d_sweep(&rl, omegas, &cfg).unwrap();
+        let (tv, _) = rc_1d_sweep(&sg, omegas, &cfg).unwrap();
+        let mut scale = 0.0f64;
+        for v in sv.iter().chain(tv.iter()) {
+            scale = scale.max(v.norm());
+        }
+        for (i, &w) in omegas.iter().enumerate() {
+            let (bv, _) = rc_1d_batch(&rl, &[rl.beta], w, &cfg).unwrap();
+            let (cv, _) = rc_1d_batch(&sg, &[sg.beta], w, &cfg).unwrap();
+            let dr = (sv[i] - bv[0]).norm() / scale;
+            let ds = (tv[i] - cv[0]).norm() / scale;
+            assert!(dr < 1e-12, "rational sweep vs batch [{i}] w={w}: {dr:.3e}");
+            assert!(ds < 1e-12, "simg sweep vs batch [{i}] w={w}: {ds:.3e}");
+        }
+    }
+}
+
+#[test]
+fn rc1d_sweep_simg_and_custom_match_thimble() {
+    let cfg = SliceConfig { omega: 1.0, ..Default::default() };
+    let omegas: Vec<f64> = (0..8).map(|i| 0.5 * 2.0f64.powi(i)).collect();
+    // SimGLens vs the thimble
+    let simg = SimGLens { beta: 0.4, kappa: 1.0, kmax: 2 };
+    let (vals, errs) = rc_1d_sweep(&simg, &omegas, &cfg).unwrap();
+    assert_sweep_matches_thimble("simg", &vals, &errs, &thimble_sweep(&simg, &omegas));
+    // CustomRationalLens(kappa=1, A=[-2], B=[1,0,1]) == RationalLens(kappa=-2)
+    let custom = CustomRationalLens {
+        beta: 0.4,
+        kappa: 1.0,
+        num: vec![Complex64::new(-2.0, 0.0)],
+        den: vec![Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0), Complex64::new(1.0, 0.0)],
+    };
+    let (cvals, _) = rc_1d_sweep(&custom, &omegas, &cfg).unwrap();
+    let rational = RationalLens { beta: 0.4, kappa: -2.0 };
+    let (rvals, _) = rc_1d_sweep(&rational, &omegas, &cfg).unwrap();
+    let mut scale = 0.0f64;
+    for v in &rvals {
+        scale = scale.max(v.norm());
+    }
+    for i in 0..omegas.len() {
+        let d = (cvals[i] - rvals[i]).norm() / scale;
+        assert!(d < 1e-12, "custom vs rational [{i}]: {d:.3e}");
+    }
+}
+
+#[test]
+fn rc1d_sweep_budget_covers_contour_family() {
+    // The RC tail angle is a free contour parameter: the sweep's value must be
+    // invariant across the family, and the reported budget must cover the
+    // residual spread (the house "estimates cover the true error" rule, with
+    // the family as the arbiter).  Measured spread <= 5e-16 over omega
+    // 0.5..40 for both lenses; the budgets carry >= 3x margin everywhere.
+    let cfg_a = SliceConfig { omega: 1.0, ..Default::default() };
+    let cfg_b = SliceConfig {
+        omega: 1.0,
+        tail_angle: std::f64::consts::FRAC_PI_4 / 1.5,
+        ..Default::default()
+    };
+    macro_rules! family {
+        ($name:literal, $lens:expr) => {{
+            let lens = $lens;
+            for w in [0.5f64, 1.0, 4.0, 40.0] {
+                let (va, ea) = rc_1d_sweep(&lens, &[w], &cfg_a).unwrap();
+                let (vb, eb) = rc_1d_sweep(&lens, &[w], &cfg_b).unwrap();
+                let d = (va[0] - vb[0]).norm();
+                let allow = 8.0 * f64::EPSILON * (va[0].norm() + vb[0].norm());
+                assert!(
+                    d <= ea[0] + eb[0] + allow,
+                    "{} w={w}: family spread {d:.3e} exceeds the budgets {:.3e}",
+                    $name,
+                    ea[0] + eb[0]
+                );
+                let scale = va[0].norm().max(vb[0].norm()).max(1e-30);
+                assert!(
+                    d / scale < 1e-13,
+                    "{} w={w}: family spread {:.3e} relative",
+                    $name,
+                    d / scale
+                );
+            }
+        }};
+    }
+    family!("RationalLens", RationalLens { beta: -0.72, kappa: -2.0 });
+    family!("SimGLens", SimGLens { beta: 0.4, kappa: 1.0, kmax: 2 });
+}
+
+#[test]
+fn rc1d_sweep_rejects_bad_input() {
+    let good = RationalLens { beta: 0.0, kappa: -2.0 };
+    let cfg = SliceConfig { omega: 1.0, ..Default::default() };
+    // empty grid, omega <= 0, non-finite omega
+    assert!(rc_1d_sweep(&good, &[], &cfg).is_err());
+    assert!(rc_1d_sweep(&good, &[1.0, 0.0], &cfg).is_err());
+    assert!(rc_1d_sweep(&good, &[f64::NAN], &cfg).is_err());
+    // band_ratio <= 1 (the bands are load-bearing here)
+    let bad_cfg = SliceConfig { omega: 1.0, band_ratio: 1.0, ..Default::default() };
+    assert!(rc_1d_sweep(&good, &[1.0, 2.0], &bad_cfg).is_err());
+    // real-axis pole and unbounded potential share the rc_1d_batch checks
+    let bad = CustomRationalLens {
+        beta: 0.0,
+        kappa: 1.0,
+        num: vec![Complex64::new(1.0, 0.0)],
+        den: vec![Complex64::new(-1.0, 0.0), Complex64::new(1.0, 0.0)],
+    };
+    assert!(rc_1d_sweep(&bad, &[1.0], &cfg).is_err());
+    let bad = CustomRationalLens {
+        beta: 0.0,
+        kappa: 1.0,
+        num: vec![Complex64::new(0.0, 0.0), Complex64::new(0.0, 0.0), Complex64::new(1.0, 0.0)],
+        den: vec![Complex64::new(1.0, 0.0)],
+    };
+    assert!(rc_1d_sweep(&bad, &[1.0], &cfg).is_err());
+}
+
+#[test]
+fn rc1d_sweep_parallel_equals_serial_bitwise() {
+    let lens = RationalLens { beta: -0.72, kappa: -2.0 };
+    let omegas: Vec<f64> = (0..12).map(|i| 1.0 + 0.5 * i as f64).collect();
+    let ser = SliceConfig { omega: 1.0, parallel: false, ..Default::default() };
+    let par = SliceConfig { parallel: true, ..ser.clone() };
+    let (vs, es) = rc_1d_sweep(&lens, &omegas, &ser).unwrap();
+    let (vp, ep) = rc_1d_sweep(&lens, &omegas, &par).unwrap();
+    for i in 0..omegas.len() {
+        assert_eq!(vs[i].re.to_bits(), vp[i].re.to_bits(), "value {i} differs");
+        assert_eq!(vs[i].im.to_bits(), vp[i].im.to_bits(), "value {i} differs");
+        assert_eq!(es[i].to_bits(), ep[i].to_bits(), "error {i} differs");
+    }
+}
+
+/// The cooperative interrupt hook on the 1D sweep: a firing probe aborts with
+/// [`Error::Interrupted`] at the first band boundary.
+#[test]
+fn interrupt_hook_aborts_1d_sweep() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let lens = RationalLens { beta: 0.5, kappa: -2.0 };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    let firing = InterruptHook::new(move || {
+        counter.fetch_add(1, Ordering::Relaxed);
+        true
+    });
+    let cfg = SliceConfig { omega: 1.0, interrupt: Some(firing), ..Default::default() };
+    let omegas: Vec<f64> = (0..8).map(|i| 1.0 + i as f64).collect();
+    let err = rc_1d_sweep(&lens, &omegas, &cfg).unwrap_err();
+    assert!(matches!(err, Error::Interrupted), "{err:?}");
+    assert!(calls.load(Ordering::Relaxed) >= 1);
 }
 
 /// The cooperative interrupt hook on the batch path: a firing probe aborts
