@@ -1,108 +1,160 @@
 case,code,knob,knob_value,rel_err,wall_s,evals,note
-airy_y1,fastpiclef-mesh,delta,0.06,1.5361530728736534e-13,0.0007081299845594,6,
-airy_y1,fastpiclef-mesh,delta,0.03,1.7164723435345509e-15,0.0014294985012384,6,
-airy_y1,fastpiclef-mesh,delta,0.015,7.918314625995104e-16,0.0025776480033528,6,
-airy_y1,fastpiclef-mesh,delta,0.0075,7.945761206129533e-16,0.0049931619869312,6,
-airy_y1,fastpiclef-mesh,delta,0.00375,9.240334851210406e-16,0.0093534730112878,6,
-airy_y1,fastpiclef-thimble,none,-,2.9041317731281626e-15,0.0002888969902414,2,machine precision (reference)
-airy_y1,plind,delta,1.2,2.124101033587432e-07,0.5078265295014717,2001,N=2001
-airy_y1,plind,delta,0.8,2.124101033587432e-07,0.4608406635088613,2001,N=2001
-airy_y1,plind,delta,0.5,4.384655471824294e-09,0.4785247219988378,2001,N=2001
-airy_y1,plind,delta,0.3,1.0185493068305551e-09,0.57368708300055,2001,N=2001
-airy_y1,plind,delta,0.2,1.5879982024567875e-10,0.5553219220018946,2001,N=2001
-airy_caustic,fastpiclef-mesh,delta,0.06,4.0721620231417005e-14,0.0007625770085724,6,
-airy_caustic,fastpiclef-mesh,delta,0.03,2.115090011093789e-15,0.0014175359974615,6,
-airy_caustic,fastpiclef-mesh,delta,0.015,2.49707354094043e-15,0.0021226140088401,6,
-airy_caustic,fastpiclef-mesh,delta,0.0075,3.266815927830379e-15,0.0040589240088593,6,
-airy_caustic,fastpiclef-mesh,delta,0.00375,3.266815927830379e-15,0.0074710930057335,6,
-airy_caustic,fastpiclef-thimble,none,-,1.7314089789356054e-15,0.0001708510098978,2,machine precision (reference)
-airy_caustic,plind,delta,1.2,7.382878364357303e-10,0.4484985519957263,2001,N=2001
-airy_caustic,plind,delta,0.8,7.382878364357303e-10,0.449595201498596,2001,N=2001
-airy_caustic,plind,delta,0.5,7.382878364357303e-10,0.6626590259984368,2001,N=2001
-airy_caustic,plind,delta,0.3,7.382878364357303e-10,0.4532102865050547,2001,N=2001
-airy_caustic,plind,delta,0.2,9.04707991727826e-10,0.4298347735020797,2001,N=2001
-rational_k2,fastpiclef-mesh,delta,0.06,2.0466133614635936e-11,0.0008538320107618,6,
-rational_k2,fastpiclef-mesh,delta,0.03,8.612151023571773e-14,0.0013924869999755,6,
-rational_k2,fastpiclef-mesh,delta,0.015,7.23011179908585e-15,0.0023750315158395,6,
-rational_k2,fastpiclef-mesh,delta,0.0075,6.93717117091012e-15,0.0044374999997671,6,
-rational_k2,fastpiclef-mesh,delta,0.00375,5.925609757120529e-15,0.0091830205055885,6,
-rational_k2,fastpiclef-thimble,none,-,0.0,0.000320222985465,3,machine precision (reference)
+airy_y1,fastpiclef-mesh,delta,0.06,1.536153072873653e-13,0.0006668454880127683,6,
+airy_y1,fastpiclef-mesh,delta,0.03,1.7164723435345509e-15,0.0011967175087193027,6,
+airy_y1,fastpiclef-mesh,delta,0.015,7.918314625995104e-16,0.001768858011928387,6,
+airy_y1,fastpiclef-mesh,delta,0.0075,7.945761206129533e-16,0.0032493965118192136,6,
+airy_y1,fastpiclef-mesh,delta,0.00375,9.240334851210406e-16,0.007246837500133552,6,
+airy_y1,fastpiclef-thimble,none,-,2.9041317731281622e-15,0.0001830020046327263,2,machine precision (reference)
+airy_y1,plind,delta,1.2,2.124101033587432e-07,0.465642615017714,2001,N=2001
+airy_y1,plind,delta,0.8,2.124101033587432e-07,0.4646131485060323,2001,N=2001
+airy_y1,plind,delta,0.5,4.384655471824294e-09,0.45309660700149834,2001,N=2001
+airy_y1,plind,delta,0.3,1.018549306830555e-09,0.4120740265061613,2001,N=2001
+airy_y1,plind,delta,0.2,1.5879982024567875e-10,0.3919994224997936,2001,N=2001
+airy_caustic,fastpiclef-mesh,delta,0.06,4.0721620231417005e-14,0.0005293064896250144,6,
+airy_caustic,fastpiclef-mesh,delta,0.03,2.115090011093789e-15,0.0008790584979578853,6,
+airy_caustic,fastpiclef-mesh,delta,0.015,2.49707354094043e-15,0.0016948104894254357,6,
+airy_caustic,fastpiclef-mesh,delta,0.0075,3.266815927830379e-15,0.003323999000713229,6,
+airy_caustic,fastpiclef-mesh,delta,0.00375,3.266815927830379e-15,0.006161504992633127,6,
+airy_caustic,fastpiclef-thimble,none,-,1.7314089789356054e-15,0.00016043600044213235,2,machine precision (reference)
+airy_caustic,plind,delta,1.2,7.382878364357303e-10,0.37854176650580484,2001,N=2001
+airy_caustic,plind,delta,0.8,7.382878364357303e-10,0.35529186300118454,2001,N=2001
+airy_caustic,plind,delta,0.5,7.382878364357303e-10,0.35639298999740276,2001,N=2001
+airy_caustic,plind,delta,0.3,7.382878364357303e-10,0.34686246600176673,2001,N=2001
+airy_caustic,plind,delta,0.2,9.04707991727826e-10,0.3863812759955181,2001,N=2001
+rational_k2,fastpiclef-mesh,delta,0.06,2.0466133614635936e-11,0.0007194690115284175,6,
+rational_k2,fastpiclef-mesh,delta,0.03,8.612151023571772e-14,0.0013498030020855367,6,
+rational_k2,fastpiclef-mesh,delta,0.015,7.23011179908585e-15,0.0021548965014517307,6,
+rational_k2,fastpiclef-mesh,delta,0.0075,6.9371711709101195e-15,0.00440316651656758,6,
+rational_k2,fastpiclef-mesh,delta,0.00375,5.925609757120529e-15,0.00966088350105565,6,
+rational_k2,fastpiclef-thimble,none,-,0.0,0.0004331579839345068,3,machine precision (reference)
 rational_k2,plind,delta,1.2,,,0,failed: RuntimeError
-rational_k2,plind,delta,0.8,0.0792841740796389,1.964813509999658,2001,N=2001
-rational_k2,plind,delta,0.5,0.0004548889048416,2.593978300501476,2001,N=2001
-rational_k2,plind,delta,0.3,0.0061898765836823,4.1733914884971455,2001,N=2001
-rational_k2,plind,delta,0.2,2.9859627675396945e-05,6.049823124500108,2001,N=2001
-rational_k2,P-LPI,N,2,5.386321895158464e-05,0.1583776059851516,512,median over 512 grid points; max 4.86e-03
-rational_k2,P-LPI,N,3,1.2417084025679723e-06,0.178828069998417,512,median over 512 grid points; max 1.20e-04
-rational_k2,P-LPI,N,4,2.8740357190504125e-08,0.1867042400117498,512,median over 512 grid points; max 2.82e-06
-rational_k2,P-LPI,N,5,5.594847185991468e-09,0.2348929229774512,512,median over 512 grid points; max 1.69e-06
-rational_k2,P-LPI,N,6,5.591319440526151e-09,0.315628871001536,512,median over 512 grid points; max 1.70e-06
-rational_k2,P-LPI,NMu,16,6.565367353244539e-07,0.0938424679916352,8192,median; max 1.61e-05
-rational_k2,P-LPI,NMu,32,1.2417084025679723e-06,0.1621008579968474,16384,median; max 1.20e-04
-rational_k2,P-LPI,NMu,64,8.547466960642381e-07,0.2954580710211303,32768,median; max 2.49e-05
-rational_k2,P-LPI,NMu,128,7.554730120056677e-07,0.498917157005053,65536,median; max 2.21e-05
-rational_k2,P-LPI,NMu,256,7.3057840131885e-07,0.9605843759782148,131072,median; max 2.99e-05
-point_mass,fastpiclef-rc,tol,0.0001,4.696086981662657e-07,0.0429883475007955,686,single point
-point_mass,fastpiclef-rc,tol,1e-06,8.987644103112682e-10,0.124788550514495,1006,single point
-point_mass,fastpiclef-rc,tol,1e-08,1.1172508485533656e-11,0.2232392400037497,1486,single point
-point_mass,fastpiclef-rc,tol,1e-11,2.004155345166581e-14,0.4361470769945299,1966,single point
-point_mass,fastpiclef-rc,tol,1e-14,7.510889704363955e-16,0.8635485359845916,2766,single point
-point_mass,fastpiclef-rc-batch,tol,0.0001,4.286249233816634e-07,0.0645265773346182,700,"3-point batch, per-point time, centre entry"
-point_mass,fastpiclef-rc-batch,tol,1e-08,1.4571523008864822e-11,0.2705096030016041,1500,"3-point batch, per-point time, centre entry"
-point_mass,fastpiclef-rc-batch,tol,1e-11,1.7821756075071913e-14,0.4211586826665249,1980,"3-point batch, per-point time, centre entry"
-point_mass,fastpiclef-rc-batch,tol,1e-14,9.59094810197723e-16,0.9673081614989012,2780,"3-point batch, per-point time, centre entry"
-point_mass,fastpiclef-geometric,none,-,0.0003301770279331,8.542992873117328e-06,0,"stationary phase, O(#images)"
-field3,fastpiclef-rc,tol,0.0001,1.8498250538432282e-07,0.1318124190001981,606,single point
-field3,fastpiclef-rc,tol,1e-06,4.0263401077256214e-08,0.2237105109816184,846,single point
-field3,fastpiclef-rc,tol,1e-08,1.4588005992347804e-10,0.655808433497441,1966,single point
-field3,fastpiclef-rc,tol,1e-11,1.7017787169060986e-15,1.6252662894985406,3726,single point
-field3,fastpiclef-rc,tol,1e-14,0.0,3.1286513675004244,5246,single point
-field3,fastpiclef-rc-batch,tol,0.0001,1.8490834237037725e-07,0.1160494470047221,620,"3-point batch, per-point time, centre entry"
-field3,fastpiclef-rc-batch,tol,1e-08,1.4559824387526038e-10,0.4691447658309092,1980,"3-point batch, per-point time, centre entry"
-field3,fastpiclef-rc-batch,tol,1e-11,2.912484113426026e-15,1.5329991443334925,3740,"3-point batch, per-point time, centre entry"
-field3,fastpiclef-rc-batch,tol,1e-14,1.8747141081923573e-15,2.902730916495784,5260,"3-point batch, per-point time, centre entry"
-field3,fastpiclef-geometric,none,-,0.1435996920605984,0.0001235594972968,0,"stationary phase, O(#images)"
-type2_macro,fastpiclef-rc,tol,0.0001,6.023060498301921e-07,0.1312773035024292,686,single point
-type2_macro,fastpiclef-rc,tol,1e-06,2.435555839516089e-09,0.1640935610048473,1006,single point
-type2_macro,fastpiclef-rc,tol,1e-08,9.277075849332886e-12,0.3062560290127294,1486,single point
-type2_macro,fastpiclef-rc,tol,1e-11,5.29154260129437e-15,0.6475634290109156,2126,single point
-type2_macro,fastpiclef-rc,tol,1e-14,0.0,1.2167388384987134,2766,single point
-type2_macro,fastpiclef-rc-batch,tol,0.0001,7.923344846835402e-07,0.0876901186663114,700,"3-point batch, per-point time, centre entry"
-type2_macro,fastpiclef-rc-batch,tol,1e-08,7.781631385270535e-12,0.427044973000496,1500,"3-point batch, per-point time, centre entry"
-type2_macro,fastpiclef-rc-batch,tol,1e-11,7.023518009423937e-15,0.6999772575024205,2140,"3-point batch, per-point time, centre entry"
-type2_macro,fastpiclef-rc-batch,tol,1e-14,1.4777664504402788e-15,1.4576143941715902,2780,"3-point batch, per-point time, centre entry"
-type2_macro,fastpiclef-geometric,none,-,0.0657103884172187,0.0009728109871502,0,"stationary phase, O(#images)"
-nfw,fastpiclef-rc,tol,0.0001,1.173860531926815e-13,0.056125390008674,366,single point
-nfw,fastpiclef-rc,tol,1e-06,1.173860531926815e-13,0.0514280774950748,366,single point
-nfw,fastpiclef-rc,tol,1e-08,4.815394868484612e-15,0.0739400705060688,366,single point
-nfw,fastpiclef-rc,tol,1e-11,2.986381122273626e-16,0.1328387965186266,526,single point
-nfw,fastpiclef-rc,tol,1e-14,0.0,0.1212777710024965,526,single point
-nfw,fastpiclef-rc-batch,tol,0.0001,1.793088110284895e-13,0.0357601651679336,380,"3-point batch, per-point time, centre entry"
-nfw,fastpiclef-rc-batch,tol,1e-08,1.7166496961098467e-14,0.0488943025023521,380,"3-point batch, per-point time, centre entry"
-nfw,fastpiclef-rc-batch,tol,1e-11,6.156582402742389e-16,0.0697225398325827,540,"3-point batch, per-point time, centre entry"
-nfw,fastpiclef-rc-batch,tol,1e-14,1.493190561136813e-16,0.0782718419989881,540,"3-point batch, per-point time, centre entry"
-nfw,fastpiclef-geometric,none,-,0.0914360569430898,0.0083567855181172,0,"stationary phase, O(#images)"
-point_mass,FIONA,gl_nodes_per_dim,64,14.7489730484454,0.0064200229826383,4096,"fixed mode, R=10.00 (the adaptive R(w))"
-point_mass,FIONA,gl_nodes_per_dim,128,9.686701965170393,0.0126933170104166,16384,"fixed mode, R=10.00 (the adaptive R(w))"
-point_mass,FIONA,gl_nodes_per_dim,256,3.2442454500009776,0.046527803002391,65536,"fixed mode, R=10.00 (the adaptive R(w))"
-point_mass,FIONA,gl_nodes_per_dim,512,0.0188442587854388,0.1499080000066897,262144,"fixed mode, R=10.00 (the adaptive R(w))"
-point_mass,FIONA,min_physical_radius,5,0.0122620102019492,0.0340329249884234,65536,"fixed mode, gl=256"
-point_mass,FIONA,min_physical_radius,10,3.2442454500009776,0.0299128594779176,65536,"fixed mode, gl=256"
-point_mass,FIONA,min_physical_radius,20,0.998286296302276,0.0338433779979823,65536,"fixed mode, gl=256"
-point_mass,FIONA,min_physical_radius,40,54.025836019593015,0.0376044854929205,65536,"fixed mode, gl=256"
-point_mass,FIONA,nufft_tol,0.001,0.0021238911897835,3.4060129869903903,4000000,adaptive mode (geometry-limited: flat)
-point_mass,FIONA,nufft_tol,1e-06,0.0022761096132551,4.234834397997474,4000000,adaptive mode (geometry-limited: flat)
-point_mass,FIONA,nufft_tol,1e-09,0.0022761454639915,3.660441961998004,4000000,adaptive mode (geometry-limited: flat)
-point_mass,FIONA,nufft_tol,1e-12,0.0022761451586849,4.23442250250082,4000000,adaptive mode (geometry-limited: flat)
-field3,FIONA,gl_nodes_per_dim,64,7.799835509167785,0.0045764940005028,4096,"fixed mode, R=10.00 (the adaptive R(w))"
-field3,FIONA,gl_nodes_per_dim,128,3.748487000164123,0.0120666559814708,16384,"fixed mode, R=10.00 (the adaptive R(w))"
-field3,FIONA,gl_nodes_per_dim,256,5.040504435287736,0.0398318279912928,65536,"fixed mode, R=10.00 (the adaptive R(w))"
-field3,FIONA,gl_nodes_per_dim,512,0.0043484610099608,0.1416023945057531,262144,"fixed mode, R=10.00 (the adaptive R(w))"
-field3,FIONA,min_physical_radius,5,0.0043705352127096,0.0369311860122252,65536,"fixed mode, gl=256"
-field3,FIONA,min_physical_radius,10,5.040504435287736,0.0375606565066846,65536,"fixed mode, gl=256"
-field3,FIONA,min_physical_radius,20,3.0569613154190445,0.0377409914945019,65536,"fixed mode, gl=256"
-field3,FIONA,min_physical_radius,40,17.630539181624012,0.0368750814959639,65536,"fixed mode, gl=256"
-field3,FIONA,nufft_tol,0.001,0.0005093795265001,3.963716933503747,4000000,adaptive mode (geometry-limited: flat)
-field3,FIONA,nufft_tol,1e-06,0.0004082361674643,5.079379489499843,4000000,adaptive mode (geometry-limited: flat)
-field3,FIONA,nufft_tol,1e-09,0.0004082146476677,4.995776044510421,4000000,adaptive mode (geometry-limited: flat)
-field3,FIONA,nufft_tol,1e-12,0.0004082150217811,5.006047143499018,4000000,adaptive mode (geometry-limited: flat)
+rational_k2,plind,delta,0.8,0.07928417407963892,1.516822151505039,2001,N=2001
+rational_k2,plind,delta,0.5,0.00045488890484160266,2.203125544998329,2001,N=2001
+rational_k2,plind,delta,0.3,0.006189876583682334,3.3623821919900365,2001,N=2001
+rational_k2,plind,delta,0.2,2.9859627675396942e-05,4.285593913009507,2001,N=2001
+rational_k2,P-LPI,N,2,5.386321895158464e-05,0.1123410340223927,512,median over 512 grid points; max 4.86e-03
+rational_k2,P-LPI,N,3,1.2417084025679725e-06,0.1226952440047171,512,median over 512 grid points; max 1.20e-04
+rational_k2,P-LPI,N,4,2.8740357190504125e-08,0.13371146499412134,512,median over 512 grid points; max 2.82e-06
+rational_k2,P-LPI,N,5,5.594847185991468e-09,0.17648261299473234,512,median over 512 grid points; max 1.69e-06
+rational_k2,P-LPI,N,6,5.591319440526151e-09,0.2729436540103052,512,median over 512 grid points; max 1.70e-06
+rational_k2,P-LPI,NMu,16,6.565367353244539e-07,0.06702062499243766,8192,median; max 1.61e-05
+rational_k2,P-LPI,NMu,32,1.2417084025679725e-06,0.10768438698141836,16384,median; max 1.20e-04
+rational_k2,P-LPI,NMu,64,8.547466960642381e-07,0.20403890497982502,32768,median; max 2.49e-05
+rational_k2,P-LPI,NMu,128,7.554730120056677e-07,0.40434649799135514,65536,median; max 2.21e-05
+rational_k2,P-LPI,NMu,256,7.3057840131885e-07,0.8719022470177151,131072,median; max 2.99e-05
+point_mass,fastpiclef-rc,tol,0.0001,4.696086981662657e-07,0.039586102502653375,686,single point
+point_mass,fastpiclef-rc,tol,1e-06,8.987644103112686e-10,0.09774384900811128,1006,single point
+point_mass,fastpiclef-rc,tol,1e-08,1.1172508485533657e-11,0.1811063155037118,1486,single point
+point_mass,fastpiclef-rc,tol,1e-11,2.004155345166581e-14,0.3254232955077896,1966,single point
+point_mass,fastpiclef-rc,tol,1e-14,7.510889704363955e-16,0.5909853394987294,2766,single point
+point_mass,fastpiclef-rc-batch,tol,0.0001,4.2862492338166336e-07,0.03719495833017087,700,"3-point batch, per-point time, centre entry"
+point_mass,fastpiclef-rc-batch,tol,1e-08,1.4571523008864822e-11,0.17646931633741283,1500,"3-point batch, per-point time, centre entry"
+point_mass,fastpiclef-rc-batch,tol,1e-11,1.7821756075071913e-14,0.3264879935013596,1980,"3-point batch, per-point time, centre entry"
+point_mass,fastpiclef-rc-batch,tol,1e-14,9.59094810197723e-16,0.6129992895051449,2780,"3-point batch, per-point time, centre entry"
+point_mass,fastpiclef-geometric,none,-,0.00033017702793328705,0.000250928002060391,0,"stationary phase, O(#images)"
+point_mass,FIONA,gl_nodes_per_dim,64,14.7489730484454,0.0026017594937002286,4096,"fixed mode, R=10.00 (the adaptive R(w))"
+point_mass,FIONA,gl_nodes_per_dim,128,9.686701965170393,0.006732444511726499,16384,"fixed mode, R=10.00 (the adaptive R(w))"
+point_mass,FIONA,gl_nodes_per_dim,256,3.2442454500009776,0.026274922012817115,65536,"fixed mode, R=10.00 (the adaptive R(w))"
+point_mass,FIONA,gl_nodes_per_dim,512,0.01884425878543886,0.0984614169865381,262144,"fixed mode, R=10.00 (the adaptive R(w))"
+point_mass,FIONA,min_physical_radius,5,0.01226201020194929,0.0256078609963879,65536,"fixed mode, gl=256"
+point_mass,FIONA,min_physical_radius,10,3.2442454500009776,0.0262155379896285,65536,"fixed mode, gl=256"
+point_mass,FIONA,min_physical_radius,20,0.9982862963022759,0.026269638998201117,65536,"fixed mode, gl=256"
+point_mass,FIONA,min_physical_radius,40,54.025836019593015,0.02699172552092932,65536,"fixed mode, gl=256"
+point_mass,FIONA,nufft_tol,0.001,0.0021238911897835666,2.065423493491835,4000000,adaptive mode (geometry-limited: flat)
+point_mass,FIONA,nufft_tol,1e-06,0.002276109613255137,2.820992309018038,4000000,adaptive mode (geometry-limited: flat)
+point_mass,FIONA,nufft_tol,1e-09,0.002276145463991517,2.5992815505014732,4000000,adaptive mode (geometry-limited: flat)
+point_mass,FIONA,nufft_tol,1e-12,0.0022761451586849335,2.6545459135086276,4000000,adaptive mode (geometry-limited: flat)
+field3,fastpiclef-rc,tol,0.0001,1.8498250538432274e-07,0.05631843949959148,606,single point
+field3,fastpiclef-rc,tol,1e-06,4.0263401077256214e-08,0.10844764648936689,846,single point
+field3,fastpiclef-rc,tol,1e-08,1.4588005992347804e-10,0.27925471900380217,1966,single point
+field3,fastpiclef-rc,tol,1e-11,1.7017787169060986e-15,0.8370524154888699,3726,single point
+field3,fastpiclef-rc,tol,1e-14,0.0,1.462717631002306,5246,single point
+field3,fastpiclef-rc-batch,tol,0.0001,1.8490834237037717e-07,0.04914510049760187,620,"3-point batch, per-point time, centre entry"
+field3,fastpiclef-rc-batch,tol,1e-08,1.4559824387526038e-10,0.22348719283763785,1980,"3-point batch, per-point time, centre entry"
+field3,fastpiclef-rc-batch,tol,1e-11,2.912484113426026e-15,0.6503120530008649,3740,"3-point batch, per-point time, centre entry"
+field3,fastpiclef-rc-batch,tol,1e-14,1.8747141081923573e-15,1.1341038606721365,5260,"3-point batch, per-point time, centre entry"
+field3,fastpiclef-geometric,none,-,0.14359969206060139,0.000651821494102478,0,"stationary phase, O(#images)"
+field3,FIONA,gl_nodes_per_dim,64,7.799835509167785,0.001998005493078381,4096,"fixed mode, R=10.00 (the adaptive R(w))"
+field3,FIONA,gl_nodes_per_dim,128,3.748487000164123,0.004947982000885531,16384,"fixed mode, R=10.00 (the adaptive R(w))"
+field3,FIONA,gl_nodes_per_dim,256,5.040504435287736,0.022092561499448493,65536,"fixed mode, R=10.00 (the adaptive R(w))"
+field3,FIONA,gl_nodes_per_dim,512,0.004348461009960836,0.0913663054961944,262144,"fixed mode, R=10.00 (the adaptive R(w))"
+field3,FIONA,min_physical_radius,5,0.004370535212709691,0.02265835800790228,65536,"fixed mode, gl=256"
+field3,FIONA,min_physical_radius,10,5.040504435287736,0.02475383300043177,65536,"fixed mode, gl=256"
+field3,FIONA,min_physical_radius,20,3.0569613154190445,0.02391595051449258,65536,"fixed mode, gl=256"
+field3,FIONA,min_physical_radius,40,17.630539181624012,0.023813484513084404,65536,"fixed mode, gl=256"
+field3,FIONA,nufft_tol,0.001,0.0005093795265001432,2.9094525594991865,4000000,adaptive mode (geometry-limited: flat)
+field3,FIONA,nufft_tol,1e-06,0.0004082361674643695,3.0358234439918306,4000000,adaptive mode (geometry-limited: flat)
+field3,FIONA,nufft_tol,1e-09,0.00040821464766779993,2.7792461045028176,4000000,adaptive mode (geometry-limited: flat)
+field3,FIONA,nufft_tol,1e-12,0.0004082150217811438,2.799149104510434,4000000,adaptive mode (geometry-limited: flat)
+type2_macro,fastpiclef-rc,tol,0.0001,6.023060498301921e-07,0.03288309500203468,686,single point
+type2_macro,fastpiclef-rc,tol,1e-06,2.4355558395160897e-09,0.09598359200754203,1006,single point
+type2_macro,fastpiclef-rc,tol,1e-08,9.277075849332886e-12,0.20464087299478706,1486,single point
+type2_macro,fastpiclef-rc,tol,1e-11,5.29154260129437e-15,0.4011435404972872,2126,single point
+type2_macro,fastpiclef-rc,tol,1e-14,0.0,0.6739538600086235,2766,single point
+type2_macro,fastpiclef-rc-batch,tol,0.0001,7.923344846835402e-07,0.03831643800367601,700,"3-point batch, per-point time, centre entry"
+type2_macro,fastpiclef-rc-batch,tol,1e-08,7.781631385270535e-12,0.184146375671844,1500,"3-point batch, per-point time, centre entry"
+type2_macro,fastpiclef-rc-batch,tol,1e-11,7.023518009423937e-15,0.35328486166933243,2140,"3-point batch, per-point time, centre entry"
+type2_macro,fastpiclef-rc-batch,tol,1e-14,1.4777664504402788e-15,0.6286692741608325,2780,"3-point batch, per-point time, centre entry"
+type2_macro,fastpiclef-geometric,none,-,0.06571038841721956,0.0018363175040576607,0,"stationary phase, O(#images)"
+nfw,fastpiclef-rc,tol,0.0001,1.173860531926815e-13,0.03174652399320621,366,single point
+nfw,fastpiclef-rc,tol,1e-06,1.173860531926815e-13,0.030990507497335784,366,single point
+nfw,fastpiclef-rc,tol,1e-08,4.815394868484612e-15,0.0384492214943748,366,single point
+nfw,fastpiclef-rc,tol,1e-11,2.986381122273626e-16,0.059881650493480265,526,single point
+nfw,fastpiclef-rc,tol,1e-14,0.0,0.07466832849604543,526,single point
+nfw,fastpiclef-rc-batch,tol,0.0001,1.7930881102848948e-13,0.018891897998400964,380,"3-point batch, per-point time, centre entry"
+nfw,fastpiclef-rc-batch,tol,1e-08,1.7166496961098467e-14,0.026668766998530675,380,"3-point batch, per-point time, centre entry"
+nfw,fastpiclef-rc-batch,tol,1e-11,6.156582402742385e-16,0.041105767998184696,540,"3-point batch, per-point time, centre entry"
+nfw,fastpiclef-rc-batch,tol,1e-14,1.493190561136813e-16,0.04966760416573379,540,"3-point batch, per-point time, centre entry"
+nfw,fastpiclef-geometric,none,-,0.09143605699558495,0.0307924950029701,0,"stationary phase, O(#images)"
+starfield_n1,fastpiclef-rc,tol,0.0001,2.3170349836264869e-07,0.012680281011853367,366,single point
+starfield_n1,fastpiclef-rc,tol,1e-06,4.979038687284192e-10,0.017975103488424793,366,single point
+starfield_n1,fastpiclef-rc,tol,1e-08,1.9302571906239234e-12,0.02332473499700427,446,single point
+starfield_n1,fastpiclef-rc,tol,1e-11,4.706252501063725e-13,0.034748398000374436,526,single point
+starfield_n1,fastpiclef-rc,tol,1e-14,0.0,0.1276908384897979,1246,single point
+starfield_n1,fastpiclef-rc-batch,tol,0.0001,2.419010466558961e-07,0.015333889168687165,380,"3-point batch, per-point time, centre entry"
+starfield_n1,fastpiclef-rc-batch,tol,1e-08,2.456890295805827e-12,0.02552894466498401,460,"3-point batch, per-point time, centre entry"
+starfield_n1,fastpiclef-rc-batch,tol,1e-11,4.700207726465348e-13,0.03452634516482552,540,"3-point batch, per-point time, centre entry"
+starfield_n1,fastpiclef-rc-batch,tol,1e-14,2.6422482550965856e-17,0.13076002366627412,1260,"3-point batch, per-point time, centre entry"
+starfield_n1,fastpiclef-geometric,none,-,0.003960189173635992,0.0001591434993315488,0,"stationary phase, O(#images)"
+starfield_n3,fastpiclef-rc,tol,0.0001,1.7517518648375343e-07,0.053066763997776434,606,single point
+starfield_n3,fastpiclef-rc,tol,1e-06,1.0953513079809684e-10,0.07568998950591777,686,single point
+starfield_n3,fastpiclef-rc,tol,1e-08,2.846793806842325e-12,0.09781259550072718,766,single point
+starfield_n3,fastpiclef-rc,tol,1e-11,9.009715159259325e-13,0.15596668448415585,1086,single point
+starfield_n3,fastpiclef-rc,tol,1e-14,0.0,0.5242609400011133,2846,single point
+starfield_n3,fastpiclef-rc-batch,tol,0.0001,1.7812160569072483e-07,0.04552764333493542,620,"3-point batch, per-point time, centre entry"
+starfield_n3,fastpiclef-rc-batch,tol,1e-08,3.0432209838224723e-12,0.07412158083267666,780,"3-point batch, per-point time, centre entry"
+starfield_n3,fastpiclef-rc-batch,tol,1e-11,9.000480157835331e-13,0.11537009116727859,1100,"3-point batch, per-point time, centre entry"
+starfield_n3,fastpiclef-rc-batch,tol,1e-14,6.899038755818412e-16,0.4243531751659854,2860,"3-point batch, per-point time, centre entry"
+starfield_n3,fastpiclef-geometric,none,-,0.016158228890963036,0.00032643800659570843,0,"stationary phase, O(#images)"
+starfield_n10,fastpiclef-rc,tol,0.0001,8.24333807667544e-08,0.466029006493045,1446,single point
+starfield_n10,fastpiclef-rc,tol,1e-06,2.024362054091714e-09,0.6789248784916708,1606,single point
+starfield_n10,fastpiclef-rc,tol,1e-08,2.6262889213167403e-12,0.7463330975006102,1606,single point
+starfield_n10,fastpiclef-rc,tol,1e-11,5.119964411936266e-13,1.0172376744885696,1766,single point
+starfield_n10,fastpiclef-rc,tol,1e-14,0.0,3.480168425507145,6246,single point
+starfield_n10,fastpiclef-rc-batch,tol,0.0001,8.112295130255014e-08,0.2893572954975146,1460,"3-point batch, per-point time, centre entry"
+starfield_n10,fastpiclef-rc-batch,tol,1e-08,2.5750792561485393e-12,0.44570140516831697,1620,"3-point batch, per-point time, centre entry"
+starfield_n10,fastpiclef-rc-batch,tol,1e-11,5.121005848839704e-13,0.5479496420011856,1780,"3-point batch, per-point time, centre entry"
+starfield_n10,fastpiclef-rc-batch,tol,1e-14,6.087477064331231e-16,2.0982198915007757,6260,"3-point batch, per-point time, centre entry"
+starfield_n10,fastpiclef-geometric,none,-,0.032003314678647865,0.0011687670048559085,0,"stationary phase, O(#images)"
+starfield_n30,fastpiclef-rc,tol,0.0001,2.3183974737787352e-08,6.654522002514568,3846,single point
+starfield_n30,fastpiclef-rc,tol,1e-06,2.5714566017374323e-10,8.914160020998679,4006,single point
+starfield_n30,fastpiclef-rc,tol,1e-08,7.411272627575061e-13,8.77259269451315,4006,single point
+starfield_n30,fastpiclef-rc,tol,1e-11,1.918560567876308e-13,10.544149519992061,4166,single point
+starfield_n30,fastpiclef-rc,tol,1e-14,0.0,33.71427472750656,12806,single point
+starfield_n30,fastpiclef-rc-batch,tol,0.0001,2.2539829128649618e-08,3.870788979004525,3860,"3-point batch, per-point time, centre entry"
+starfield_n30,fastpiclef-rc-batch,tol,1e-08,6.863786162223396e-13,4.516741074665333,4020,"3-point batch, per-point time, centre entry"
+starfield_n30,fastpiclef-rc-batch,tol,1e-11,1.918983580349338e-13,5.652819208999669,4180,"3-point batch, per-point time, centre entry"
+starfield_n30,fastpiclef-rc-batch,tol,1e-14,1.0712295546386924e-15,15.116418029661872,12820,"3-point batch, per-point time, centre entry"
+starfield_n30,fastpiclef-geometric,none,-,0.325028049982768,0.006403385996236466,0,"stationary phase, O(#images)"
+starfield_n100,fastpiclef-rc,tol,1e-08,1.0291887037181664e-12,194.0592679840047,12406,single point
+starfield_n100,fastpiclef-rc,tol,1e-14,0.0,483.87303484349104,27926,single point
+starfield_n100,fastpiclef-geometric,none,-,0.5355765069737153,0.12629636298515834,0,"stationary phase, O(#images)"
+starfield_n10_w0p3,fastpiclef-rc,tol,1e-08,7.970623487580249e-12,0.5121608810004545,1446,single point
+starfield_n10_w0p3,fastpiclef-rc,tol,1e-14,0.0,1.2408708479924826,2486,single point
+starfield_n10_w0p3,fastpiclef-geometric,none,-,0.0640783173554186,0.0012494929978856817,0,"stationary phase, O(#images)"
+starfield_n10_w10p0,fastpiclef-rc,tol,1e-08,1.341489498432312e-10,1.1526144264935283,1926,single point
+starfield_n10_w10p0,fastpiclef-rc,tol,1e-14,0.0,6.02126557000156,8486,single point
+starfield_n10_w10p0,fastpiclef-geometric,none,-,0.01880683276702069,0.0011229115043533966,0,"stationary phase, O(#images)"
+starfield_n10_w30p0,fastpiclef-rc,tol,1e-08,8.922613465150577e-10,2.2792347494978458,3046,single point
+starfield_n10_w30p0,fastpiclef-rc,tol,1e-14,0.0,13.733761663504993,13366,single point
+starfield_n10_w30p0,fastpiclef-geometric,none,-,0.009696258364966725,0.0011666369973681867,0,"stationary phase, O(#images)"

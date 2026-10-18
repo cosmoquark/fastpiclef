@@ -2,9 +2,9 @@
 %  fastpiclef --- readable technical report (docs/report/main.tex)
 %
 %  Build:   latexmk -pdf main.tex        (pdflatex, TikZ)
-%  Status:  first draft (2026-10-13).  Numbers marked [pending: ...] are
-%           intentionally unfilled until the final measurement pass on a quiet
-%           machine; everything else is dataset-backed (see Appendix B).
+%  Status:  first draft 2026-10-13; timing numbers re-measured in the
+%           quiet window of 2026-10-18 (no [pending] markers remain);
+%           everything is dataset-backed (see Appendix B).
 % ============================================================================
 \documentclass[11pt,a4paper]{article}
 
@@ -25,7 +25,7 @@
             urlcolor=blue!50!black]{hyperref}
 % \usepackage{natbib}
 
-\newcommand{\pending}[1]{\textcolor{red}{[pending: #1]}}
+\newcommand{\pending}[1]{\textcolor{red}{[pending: #1]}}  % kept for future drafts
 \setlength{\emergencystretch}{1.5em}
 \DeclareUrlCommand\code{\urlstyle{tt}}
 \newcommand{\Fresnel}{F}
@@ -258,7 +258,7 @@ convergence is not uniform in the saddle location.  This is not a technical
 curiosity: for the saddle-type macro image case the FFT-based reference code
 FIONA errs by $29$--$49\%$ even for the trivial lens-free check where the
 answer is $|\Fresnel| = 1/\sqrt{|\lambda_0\lambda_2|}$ exactly (dataset:
-\code{comparison/results/fiona_grid.csv}, and the saddle macro-image
+\code{comparison/results/p0_fiona.csv}, and the saddle macro-image
 tests).  Our solver is exact there ($\lesssim 6\times10^{-15}$ on the same
 cases) because the Cauchy-deformed contour decays \emph{in all directions by
 construction}.
@@ -533,15 +533,18 @@ never as the production path.
 \subsection{Axisymmetric referee and closed form}
 For a single point mass (or a circular profile) the problem is
 axisymmetric, and a high-precision polar reduction provides an independent
-referee at dozens of digits, used throughout the test suite.  For the
-isolated point-mass lens there is also the Nakamura--Deguchi closed form
-\cite{Nakamura1998,TakahashiNakamura2003} evaluated in log space
-(\texttt{point\_mass\_nd}): $\mu$s-class at $10^{-15}$--$10^{-13}$ while
-$|z| = \omega y^2/2 \lesssim 6$ and degrading like $\varepsilon e^{|z|}$
-beyond, with the honest band $|z| \lesssim 10$ and a conservative returned
-estimate.  Fast-path guidance: low $\omega$ $\to$ ND, else the exact RC;
-high $\omega$ $\to$ the polar path ($\sim$30\,ms at $\omega=10$,
-$\sim$300\,ms at $\omega=100$), then ND.
+referee at dozens of digits, used throughout the test suite; it is also the
+fast high-$\omega$ evaluator (machine precision at $\omega \ge 10$).  For
+the isolated point-mass lens there is also the Nakamura--Deguchi closed
+form \cite{Nakamura1998,TakahashiNakamura2003} evaluated in log space
+(\texttt{point\_mass\_nd}): $\mu$s-class, with the accuracy driven by the
+\emph{compound} parameter $\omega y$ --- $\varepsilon e^{\omega y}$-class
+cancellation limits it to $\le10^{-12}$ for $\omega y \lesssim 10$
+($\sim10^{-8}$ at 20, $\sim10^{-3}$ at 30), the returned estimate staying
+honest throughout (Sec.~\ref{sec:perf}).  Fast-path guidance: low $\omega$
+($\omega y \lesssim 10$) $\to$ ND, else the exact RC; high $\omega$ $\to$
+the polar path ($\sim$40\,ms at $\omega=10$, $\sim$0.4\,s at
+$\omega=100$), then ND.
 
 \subsection{Batched evaluation}
 Sources grids, frequency sweeps and parameter grids are the actual
@@ -550,15 +553,16 @@ dependence factors out of the expensive pseudo-differential part of the
 integrand (a twiddle per node), and frequency families can share one contour
 sized for their hardest member (bands with $\omega_{\max}/\omega_{\min}
 \le 10$).  The result is one contour construction amortised over many right-
-hand sides --- measured $13\times$ at $N=100$ masses on a $4\times4$ source
-grid (Sec.~\ref{sec:perf}).  Batched evaluation is \emph{bitwise identical}
+hand sides --- measured $13.7\times$ at $N=100$ masses on a $4\times4$
+source map, single-threaded, and up to $1200\times$ at $N=40$ on
+$64\times64$ (Sec.~\ref{sec:perf}).  Batched evaluation is \emph{bitwise identical}
 to per-point evaluation (fixed node and reduction order, pinned by
 bitwise-baseline tests), and parallelism is deterministic: threads are used
 at the level of independent contour tasks, not inside reductions.
 
 \subsection{High-\texorpdfstring{$\omega$}{omega} hybrid}
 For very high $\omega$ (halo lenses at LISA: $\omega \lesssim 10^4$), even
-the deformed contour becomes expensive (cost $\sim\omega^{1.45}$,
+the deformed contour becomes expensive (cost $\sim\omega^{1.47}$,
 Sec.~\ref{sec:perf}), while geometric optics plus a first correction is
 excellent: the solver can return
 \begin{equation}
@@ -724,15 +728,16 @@ forms and transposed checks).
 \noindent\textbf{Reading note.}  Counts (inner solves, panels, node counts)
 are load-independent and quoted plainly.  Wall-clock times on the
 development machine (Intel i7-10710U, 6 physical cores) are quoted with the
-recorded machine load; all timing numbers in this section are scheduled for
-a final re-measurement pass on an idle machine before publication
-\pending{final timing pass: \texttt{high\_omega}, \texttt{batch\_bench},
-\texttt{many\_masses}, the P4.4 fast-path table}.
+recorded machine load; every timing number in this section was re-measured
+in a single quiet window on 2026-10-18 (ambient CPU-pressure indicators at
+zero; per-row loads are in the datasets).  The load column of a
+multi-thread row necessarily records the run's own parallelism.
 
 \subsection{Cost laws}
 \begin{itemize}
 \item \textbf{Frequency.}  The exact RC cost grows like
-  $\omega^{1.45}$ over $\omega \in [30, 1000]$ (dataset:
+  $\omega^{1.47}$ over $\omega \in [10, 1000]$ (steepening to a local
+  $\omega^{1.70}$ over $[30, 1000]$; dataset:
   \code{comparison/results/high_omega.csv}), driven by the shrinking
   Fresnel scale, which forces more panels near the anchors.  This is why
   the high-$\omega$ hybrid exists: beyond $\omega\sim 10^{3}$
@@ -742,20 +747,37 @@ a final re-measurement pass on an idle machine before publication
   nodes at $\omega = 3$) and the inner integrand sums over $N$ components at
   every node: the exact engine is $\mathcal O(N^2)$ in node \emph{slots}
   (dataset: \code{comparison/results/many_masses.csv};
-  $N = 10/30/100$ at $\omega = 3$: $2.5/19.6/208$\,s, wall
-  ${\sim}N^{1.9}$, under load).  Batching amortises the constant
-  ($13\times$ at $N=100$ on a $4\times4$ source grid via
-  \texttt{PointMassField.map}) but not the scaling; Sec.~\ref{sec:outlook}
-  records the negative result for the obvious fix.
+  $N = 10/30/100$ at $\omega = 3$: $0.58/5.4/78$\,s, and at $\omega = 30$:
+  $3.0/26/376$\,s --- 12-thread quiet-window walls, ${\sim}N^{2.1}$).
+  Batching amortises the constant ($13.7\times$ at $N=100$ on a $4\times4$
+  source map, single-threaded, up to $1200\times$ at $N=40$ on
+  $64\times64$; dataset: \code{comparison/results/batch_bench.csv}) but not
+  the scaling; Sec.~\ref{sec:outlook} records the negative result for the
+  obvious fix.
+\item \textbf{Tolerance in star fields.}  The adaptive engine's achieved
+  error tracks the requested tolerance in fields of point masses up to
+  $N = 100$: in every row of the star-field study the modulus error sits
+  one to four orders of magnitude \emph{below} the request ($\texttt{tol}
+  = 10^{-8}$ gives $10^{-10}$--$10^{-12}$ errors; the margin shrinks only
+  as the request approaches the roundoff floor), at single-thread walls
+  from $0.01$\,s ($N=1$) to $194$\,s ($N=100$ at $\omega = 3$);
+  tightening to $10^{-14}$ costs a further $2.5$--$5\times$ and lands on
+  the Cauchy-margin truth floor (dataset:
+  \code{comparison/results/convergence\_p3.csv}, the \texttt{starfield\_*}
+  rows — the same star generator as \texttt{many\_masses.csv}).
+  Frequency dependence at fixed $N=10$ is weak ($10^{-12}$--$10^{-9}$
+  across $\omega = 0.3$--$30$ at $\texttt{tol} = 10^{-8}$).
 \item \textbf{Parallelism.}  Independent contour tasks are scheduled with
-  rayon, bitwise-identically to serial; measured $6.2\times$, $6.5\times$
-  and $7.4\times$ at $\omega = 100$, $300$, $1000$ on the clean
-  high-$\omega$ point-mass run (dataset:
-  \code{comparison/results/high_omega.csv}) --- on a 6-physical-core
-  machine (the $7.4\times$ run uses the hyperthreads).  The project's
+  rayon, bitwise-identically to serial; measured $5.0\times$, $4.6\times$
+  and $4.5\times$ at $\omega = 100$, $300$, $1000$ in the quiet-window
+  point-mass run (dataset: \code{comparison/results/high_omega.csv}).
+  An earlier pass had read $6$--$7\times$, but its single-threaded legs
+  still carried residual background load; the quiet numbers are the honest
+  ones.  With all cores busy the box drops to roughly half its single-core
+  clock, so $4.5$--$5\times$ --- some 80\% of the six-physical-core ideal
+  --- is this machine's practical ceiling for FP-heavy work; the project's
   original $\ge 8\times$ target was set against 12 cores and is not
-  attainable for FP-heavy work here; the measured values sit at the
-  practical ceiling of this box.
+  attainable on this part.
 \end{itemize}
 
 \subsection{Head-to-head with the reference codes}
@@ -781,13 +803,14 @@ solver's machine-precision values and independent referees:
   frequency sweep its relative error stays at $10^{-4}$--$10^{-2}$ across
   $\omega = 0.5$--$30$ (dataset: \code{comparison/results/freq.png}); on
   saddle-type macro images it fails by $29$--$49\%$ even in the lens-free
-  limit (dataset: \code{comparison/results/fiona_grid.csv}) --- see
+  limit (dataset: \code{comparison/results/p0_fiona.csv}) --- see
   Sec.~\ref{sec:saddle}.  The harness therefore never uses FIONA as truth
   in that regime.
 \item \texttt{wolensing} (numpy/lenstronomy FFT code): reproduces its own
   shipped SIS reference to $1.4\times10^{-11}$; a head-to-head against the
   exact solver over the full $\omega$ range agrees to
-  $1.3\times10^{-3}$--$1.0\times10^{-2}$ --- their FFT/time-window
+  $5\times10^{-4}$--$6.7\times10^{-2}$ (the larger-offset SIS rows worst;
+  point-mass and NFW at $1$--$3\times10^{-3}$) --- their FFT/time-window
   accuracy (dataset: \code{comparison/results/wolensing_compare.csv}).
 \end{itemize}
 
@@ -819,13 +842,22 @@ nightly tests).}
 \end{figure}
 
 \subsection{Fast paths}
-For the isolated lens the practical guidance is a two-line route: ND
-closed form ($\sim$10\,$\mu$s) wherever $|z| = \omega y^2/2 \lesssim 10$;
-the polar path above ($\sim$30\,ms at $\omega=10$, $\sim$300\,ms at
-$\omega=100$); the exact 2D RC at low $\omega$ where it is exact and cheap
-($\sim$0.1--0.4\,s at $\omega \le 3$).  For fields of many masses the exact
-engine plus batched maps remains the production route for the science
-regimes of Sec.~\ref{sec:outlook}.
+For the isolated lens the practical guidance is a low/high-$\omega$ rule.
+The ND closed form costs $\sim$2\,$\mu$s but lives only inside its honest
+band: the accuracy driver is the compound parameter $\omega y$, not $|z|$
+alone --- the series' cancellation grows like $e^{\omega y}$, so errors are
+$\le10^{-12}$ for $\omega y \lesssim 10$, $\sim10^{-8}$ at $\omega y = 20$
+and $\sim10^{-3}$ at $\omega y = 30$ before it fails outright, while its
+own estimate stays honest throughout (coverage $\ge 9\times$; dataset:
+\code{comparison/results/nd_band.csv}).  The polar path is machine
+precision at high $\omega$ ($\sim$40\,ms at $\omega = 10$, $\sim$0.4\,s at
+$100$) but slow and loose at low $\omega$ ($\sim$1--2\,s and
+$10^{-4}$--$10^{-3}$ errors at $\omega \le 1$); the exact 2D RC is the
+low-$\omega$ route where it is exact and cheap ($\sim$70--270\,ms at
+$\omega \le 3$; dataset: \code{comparison/results/fast_paths.csv}, which
+measures all three paths against the tight RC).  For fields of many masses
+the exact engine plus batched maps remains the production route for the
+science regimes of Sec.~\ref{sec:outlook}.
 
 % ============================================================================
 \section{The time-domain view}
@@ -993,8 +1025,12 @@ reference-level accuracy ($10^{-15}$-class) &
   \code{comparison/results/wolensing_compare.csv}, \code{tests/}\\
 cost vs $\omega$, threading, ND comparison &
   \code{comparison/results/high_omega.csv}\\
-many-mass cost, batching factor &
+many-mass cost, node-slot counts &
   \code{comparison/results/many_masses.csv}\\
+batched maps/sweeps amortisation &
+  \code{comparison/results/batch_bench.csv}\\
+fast paths (ND / polar / RC) and the ND band &
+  \code{comparison/results/fast_paths.csv}, \code{comparison/results/nd_band.csv}\\
 head-to-head (\texttt{plind}, \texttt{P-LPI}, FIONA) &
   \code{comparison/results/summary.csv}, \texttt{grid\_times.csv},
   \texttt{freq\_times.csv}, \texttt{fiona\_grid.csv}\\
@@ -1002,7 +1038,7 @@ profile validation vs FIONA &
   \code{comparison/results/profiles_fiona.csv}\\
 hybrid budget coverage &
   \code{comparison/results/hybrid_check.csv}\\
-convergence orders, difficult cases &
+convergence orders (incl. the star-field tolerance study), difficult cases &
   \texttt{comparison/results/convergence\_p3.\{csv,png\}},
   \texttt{difficult\_cases.\{csv,md\}}\\
 many-mass folding (negative result) &
@@ -1017,16 +1053,17 @@ all error budgets, term by term & \code{docs/error_budget.md}\\
 \section{Reproducing}
 \label{app:repro}
 The repository's CI script (\code{scripts/ci.sh}) builds the Rust core
-with the full release test suite ($123$ tests across $15$ binaries), rebuilds
-the Python bindings with \texttt{maturin}, and runs the Python wrapper
-tests ($22$ tests) plus the examples build.  The comparison harness and the
+with the full release test suite ($131$ Rust tests: $53$ unit and $78$
+integration, $2$ deliberately ignored), rebuilds the Python bindings with
+\texttt{maturin}, and runs the Python wrapper tests ($24$) and the
+type-stub drift test ($4$ checks), plus the examples build.  The comparison harness and the
 reference codes live in dedicated \texttt{pixi} environments; each
 comparison figure names its generating script in
 \code{comparison/results/}.  The executed notebooks
 (\code{notebooks/getting\_started.ipynb}, \code{notebooks/comparison.ipynb},
 \code{notebooks/method.ipynb}, \code{notebooks/time\_domain.ipynb})
 demonstrate the API end to end --- including the fast paths of
-Sec.~\ref{sec:engines}, the self-contained visualisation of the contour
+Sec.~\ref{sec:perf}, the self-contained visualisation of the contour
 construction, the head-to-head of Sec.~\ref{sec:head2head}, and the
 time-domain view of Sec.~\ref{sec:timedomain} --- with embedded outputs and
 figures.  The development journal

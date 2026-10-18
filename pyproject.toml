@@ -104,4 +104,6 @@ many-masses = { cmd = "cargo run --release --example many_masses --", depends-on
 many-masses-fold = { cmd = "python -m comparison.many_masses_fold", depends-on = ["build"] }
 logistic-bridge = { cmd = "python -m comparison.logistic_bridge", depends-on = ["build"] }
 fast-paths = { cmd = "python -m comparison.fast_paths", depends-on = ["build"] }
+nd-band = { cmd = "python -m comparison.nd_band", depends-on = ["build"] }
+plot-bench = { cmd = "python -m comparison.plot_bench", depends-on = ["build"] }
 profiles-fiona = { cmd = "python comparison/profiles_fiona_check.py", depends-on = ["build"] }

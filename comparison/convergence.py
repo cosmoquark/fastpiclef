@@ -23,6 +23,7 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 import math
 
+import json
 import numpy as np
 import pandas as pd
 
@@ -38,6 +39,26 @@ RESULTS = os.path.join(os.path.dirname(__file__), "results")
 # The weak 3-mass field of C2 (same as run.py's FIELD_*).
 FIELD_LENSES = [(0.6, 0.0, 0.4), (-0.5, 0.4, 0.3), (0.1, -0.6, 0.35)]
 FIELD_SOURCE = (0.2, 0.1)
+
+
+def _star_lenses(n: int, seed: int = 12345):
+    """The deterministic star field of `examples/many_masses.rs` (replicated
+    here, xorshift64, seed 12345): n equal masses 0.05, uniform in [-3, 3]^2.
+    Cross-links the tolerance x N study to the many-mass cost dataset."""
+    mask = (1 << 64) - 1
+    s = seed | 1
+    out = []
+    for _ in range(n):
+        s = (s ^ (s << 13)) & mask
+        s ^= s >> 7
+        s = (s ^ (s << 17)) & mask
+        x = (s >> 11) / float(1 << 53)
+        s = (s ^ (s << 13)) & mask
+        s ^= s >> 7
+        s = (s ^ (s << 17)) & mask
+        y = (s >> 11) / float(1 << 53)
+        out.append((x * 6.0 - 3.0, y * 6.0 - 3.0, 0.05))
+    return out
 
 RC_TOLS = (1e-4, 1e-6, 1e-8, 1e-11, 1e-14)
 BATCH_TOLS = (1e-4, 1e-8, 1e-11, 1e-14)
@@ -132,14 +153,48 @@ def build_cases():
         lambda: fpl.LensField([fpl.NFWComp(0.0, 0.0, 1.0, 1.0)], beta=(0.5, 0.0)),
         truth_src="tight RC (validated vs the Hankel referee <= 8e-15)", source=(0.5, 0.0),
     ))
+    # ---- star fields: the tolerance x N (and omega) study ----
+    for n in (1, 3, 10, 30):
+        cases.append(_case(
+            f"starfield_n{n}", 2, 3.0,
+            lambda n=n: fpl.PointMassField(_star_lenses(n), beta=(0.5, 0.0)),
+            truth_src="tight RC + Cauchy spread", source=(0.5, 0.0),
+        ))
+    cases.append(_case(
+        "starfield_n100", 2, 3.0,
+        lambda: fpl.PointMassField(_star_lenses(100), beta=(0.5, 0.0)),
+        truth_src="tight RC + Cauchy spread", source=(0.5, 0.0),
+        tols=(1e-8, 1e-14), batch=False,
+    ))
+    for w in (0.3, 10.0, 30.0):
+        cases.append(_case(
+            f"starfield_n10_w{str(w).replace('.', 'p')}", 2, w,
+            lambda: fpl.PointMassField(_star_lenses(10), beta=(0.5, 0.0)),
+            truth_src="tight RC + Cauchy spread", source=(0.5, 0.0),
+            tols=(1e-8, 1e-14), batch=False,
+        ))
     return cases
 
 
 def resolve_truths(cases):
     """Fill in the RC truths for cases without a closed form, with a
-    margin-family Cauchy spread as the truth uncertainty."""
+    margin-family Cauchy spread as the truth uncertainty.
+
+    Truths are checkpointed to `results/convergence_p3_truths.json` after each
+    case (the N = 100 star field costs minutes per solve), so an interrupted
+    run resumes without recomputing them.
+    """
+    ckpt_path = os.path.join(RESULTS, "convergence_p3_truths.json")
+    ckpt = {}
+    if os.path.exists(ckpt_path):
+        with open(ckpt_path) as fh:
+            ckpt = json.load(fh)
     for c in cases:
         if c["truth"] is not None:
+            continue
+        if c["name"] in ckpt:
+            c["truth"] = complex(*ckpt[c["name"]]["truth"])
+            c["truth_spread"] = ckpt[c["name"]]["spread"]
             continue
         b = c["builder"]
         v = complex(b().solve(omega=c["omega"], tol=1e-14).integral)
@@ -147,6 +202,9 @@ def resolve_truths(cases):
         v3 = complex(b().solve(omega=c["omega"], tol=1e-14, margin_outer=3.0).integral)
         c["truth"] = v
         c["truth_spread"] = max(abs(v2 - v), abs(v3 - v)) / abs(v)
+        ckpt[c["name"]] = {"truth": [v.real, v.imag], "spread": c["truth_spread"]}
+        with open(ckpt_path, "w") as fh:
+            json.dump(ckpt, fh, indent=1)
     return cases
 
 
@@ -180,10 +238,15 @@ def study_ours_rc_batch(case, tols=BATCH_TOLS):
 
 def study_ours_geometric(case):
     b = case["builder"]
-    r, s = timed(lambda: b().geometric(case["omega"]), reps=2)
-    return [_row(case["name"], "fastpiclef-geometric", "none", "-",
-                 _rel(complex(r.integral), case["truth"]), s, 0,
-                 "stationary phase, O(#images)")]
+    try:
+        r, s = timed(lambda: b().geometric(case["omega"]), reps=2)
+        return [_row(case["name"], "fastpiclef-geometric", "none", "-",
+                     _rel(complex(r.integral), case["truth"]), s, 0,
+                     "stationary phase, O(#images)")]
+    except Exception as e:  # noqa: BLE001  (the certified finder may refuse)
+        return [_row(case["name"], "fastpiclef-geometric", "none", "-",
+                     float("nan"), float("nan"), 0,
+                     f"failed: {type(e).__name__}: {e}")]
 
 
 def study_ours_thimble(case):
@@ -358,7 +421,8 @@ def make_figures(df, cases):
 
     groups = [
         ("1d", [c for c in cases if c["dim"] == 1]),
-        ("2d", [c for c in cases if c["dim"] == 2]),
+        ("2d", [c for c in cases
+                if c["dim"] == 2 and not c["name"].startswith("starfield")]),
     ]
     for tag, cs in groups:
         fig, axes = plt.subplots(1, len(cs), figsize=(4.6 * len(cs), 4.3), squeeze=False)
@@ -393,6 +457,7 @@ def main():
               f"({c['truth_src']}; spread {c['truth_spread']:.1e})")
 
     rows = []
+    out_csv = os.path.join(RESULTS, "convergence_p3.csv")
     for c in cases:
         print(f"== {c['name']} ==")
         try:
@@ -403,8 +468,9 @@ def main():
                 if c.get("plpi"):
                     rows += study_plpi(c)
             else:
-                rows += study_ours_rc(c)
-                rows += study_ours_rc_batch(c)
+                rows += study_ours_rc(c, c.get("tols", RC_TOLS))
+                if c.get("batch", True):
+                    rows += study_ours_rc_batch(c, c.get("tols_batch", BATCH_TOLS))
                 rows += study_ours_geometric(c)
                 if c.get("fiona"):
                     rows += study_fiona(c)
@@ -413,9 +479,10 @@ def main():
             rows.append(_row(c["name"], "study-error", "-", "-", float("nan"),
                              float("nan"), 0, f"{type(e).__name__}: {e}"))
         print(f"  rows: {len(rows)}")
+        # incremental snapshot: an interrupted run keeps the finished cases
+        pd.DataFrame(rows).to_csv(out_csv, index=False)
 
     df = pd.DataFrame(rows)
-    out_csv = os.path.join(RESULTS, "convergence_p3.csv")
     df.to_csv(out_csv, index=False)
     print(f"wrote {out_csv} ({len(df)} rows)")
     make_figures(df, cases)

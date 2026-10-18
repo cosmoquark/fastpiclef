@@ -1,6 +1,8 @@
 //! Nakamura–Deguchi closed form for the isolated point-mass lens — the
-//! **µs-class exact evaluator** for the case the 2D RC engine handles in
-//! 0.1–9 s and the polar 1D path in 30 ms–3.6 s (and loosely at low ω).
+//! **µs-class evaluator** inside its band, where the 2D RC engine costs
+//! 70–270 ms at ω ≤ 3 (0.6 s at 10, 6.8 s at 100) and the polar 1D path
+//! 40 ms–0.4 s at ω = 10–100, but 0.9–2.3 s and loose at ω ≤ 1
+//! (single-thread quiet-window walls: `comparison/results/fast_paths.csv`).
 //!
 //! $$ F(\omega, y) = e^{\pi\omega/4}\,
 //!   e^{i\frac{\omega}{2}\left(\ln\frac{\omega}{2} - 2\phi_m\right)}\,
@@ -13,14 +15,14 @@
 //! Numerics: everything in *log space* (the $e^{\pm\pi\omega/4}$ scales exceed
 //! `f64` for $\omega \gtrsim 900$), $\ln\Gamma$ by the Stirling series with a
 //! recurrence upshift, and the confluent hypergeometric by its series with a
-//! cancellation-based error estimate.  The series' cancellation grows like
-//! $e^{|z|}$ with $z = i\omega y^2/2$ (measured 2026-10-13: rel error
-//! $10^(-15)$..$6 times 10^(-13)$ for $|z| lt.eq 6$, $4 times 10^(-7)$ at
-//! $|z| = 20$), so the validated regime is $|z| \lesssim 10$ for
-//! reference-grade work; the returned estimate is conservative (measured
-//! coverage $gt.eq 2 times$).  Above that, use the polar path
-//! (`PointMass.solve(method="polar")`, fast for $\omega \gtrsim 10$) or the
-//! high-$\omega$ hybrid.
+//! cancellation-based error estimate.  The series' worst term grows like
+//! $e^{\omega y}$ in the *compound* parameter $\omega y$ (measured 2026-10-18
+//! against the exact RC, `comparison/results/nd_band.csv`): rel errors run
+//! $10^(-15)$..$10^(-12)$ for $\omega y lt.eq 10$, $tilde 10^(-8)$ at 20,
+//! $tilde 10^(-3)$ at 30, failing outright beyond $tilde 40$; the returned
+//! estimate stays honest throughout (coverage $gt.eq 9 times$).  Above the
+//! band, use the polar path (`PointMass.solve(method="polar")`, fast for
+//! $\omega \gtrsim 10$) or the high-$\omega$ hybrid.
 
 use num_complex::Complex64;
 

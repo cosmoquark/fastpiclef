@@ -126,7 +126,7 @@ fn main() {
                 log_row(
                     "2d-map",
                     n_lenses,
-                    &format!("{side}x{side}"),
+                    &format!("{side}x{side}@w{omega}"),
                     1,
                     "batch",
                     t_batch,
@@ -150,7 +150,7 @@ fn main() {
                 log_row(
                     "2d-map",
                     n_lenses,
-                    &format!("{side}x{side}"),
+                    &format!("{side}x{side}@w{omega}"),
                     1,
                     "scalar-sub8",
                     est,
@@ -182,7 +182,7 @@ fn main() {
         log_row(
             "map-100",
             n_lenses,
-            "4x4",
+            "4x4@w3",
             1,
             "batch",
             t_batch,
@@ -198,11 +198,11 @@ fn main() {
         log_row(
             "map-100",
             n_lenses,
-            "4x4",
+            "4x4@w3",
             1,
             "scalar-anchor",
             est,
-            &format!("1 point ({t_1:.3} s at beta=({bc:.3},{bc:.3})), x16"),
+            &format!("1 point ({t_1:.3} s at beta0 = beta1 = {bc:.3}); x16"),
         );
         println!(
             "map-100 N=100 4x4 w=3: batch {t_batch:.3} s vs scalar anchor est {est:.3} s  (speedup {:.1}x)",
