@@ -30,3 +30,9 @@ criterion = "0.5"
 excessive_precision = "allow"
 # `!(x > 0.0)` is the NaN-safe positive-check idiom used at every input boundary.
 neg_cmp_op_on_partial_ord = "allow"
+
+[profile.release]
+# Cross-crate inlining (nalgebra/num-complex into the quadrature loops) without
+# changing IEEE-754 evaluation order: `tests/bitwise_baseline.rs` guards the bits.
+lto = "thin"
+codegen-units = 1
