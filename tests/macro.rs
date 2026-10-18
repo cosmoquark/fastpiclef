@@ -213,7 +213,7 @@ fn geometric_limit_sharpens_with_omega() {
             .unwrap()
             .value;
         let f_exact = exact * omega / (2.0 * std::f64::consts::PI * Complex64::i());
-        let f_geo = lens_field_geometric(&field, omega);
+        let f_geo = lens_field_geometric(&field, omega).unwrap();
         (f_exact - f_geo).norm()
     };
     let (d50, d100) = (d(50.0), d(100.0));

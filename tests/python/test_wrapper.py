@@ -387,15 +387,47 @@ def test_lens_field_hybrid_quadratic_and_caustic():
     h = lf.hybrid(omega=10.0, tol=1e-9)
     assert h.method == "geometric+correction", h
     assert abs(h.integral - g.integral) < 1e-12 * abs(g.integral)
-    # Caustic (source at the point-mass caustic): the asymptotic branch is
-    # invalid (None) or carries a huge estimate, and the hybrid falls back.
+    # Caustic (source at the point-mass caustic): the certified finder reports
+    # the degenerate ring, `geometric_corrected` maps it to `None`, and the
+    # hybrid falls back.
     lf2 = fpl.LensField([fpl.PointComp(0.0, 0.0, 1.0)], beta=(0.0, 0.0))
     c2 = lf2.geometric_corrected(omega=50.0)
-    assert c2 is None or c2.error > 1.0, c2
+    assert c2 is None, c2
     h2 = lf2.hybrid(omega=50.0, tol=1e-3)
     assert h2.method == "slice", h2
     ref = lf2.solve(omega=50.0)
     assert abs(h2.integral - ref.integral) < 1e-9 * abs(ref.integral)
+
+
+def test_lens_field_images_certified_and_caustic_raises():
+    # O1 (2026-10-19): the general finder is completeness-certified with the
+    # same contract as PointMassField.  The 5-star getting-started stock as
+    # LensField components (kappa = gamma = 0) must give the same 6 certified
+    # images and the pinned F_geo(2) as the point-mass-only finder ...
+    stock = [
+        (0.75057279962800205, 2.3832828058174531),
+        (1.6541141414711609, -1.6487568600564488),
+        (-1.1990022905326474, 2.2413206723775714),
+        (-2.9684081726065514, 1.9273705102965977),
+        (1.7824165725122771, -0.19239028293767557),
+    ]
+    lf = fpl.LensField([fpl.PointComp(x, y, 0.05) for x, y in stock], beta=(0.5, 0.2))
+    imgs = lf.images()
+    assert len(imgs) == 6, imgs
+    g = lf.geometric(2.0)
+    want = 0.9266206441958274 - 0.4057561845676481j
+    assert abs(g.amplification - want) < 1e-8, g
+    # ... and a caustic raises (degenerate image set: the whole Einstein ring)
+    # instead of silently dropping it.
+    caustic = fpl.LensField([fpl.PointComp(0.0, 0.0, 1.0)], beta=(0.0, 0.0))
+    for call in [caustic.images, lambda: caustic.geometric(2.0)]:
+        try:
+            call()
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("expected RuntimeError at a caustic")
+    assert caustic.geometric_corrected(2.0) is None
 
 
 def test_slice_inner_rc_free_space():

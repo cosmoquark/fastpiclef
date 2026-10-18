@@ -116,23 +116,27 @@ a *referee* for the 2D engine (independent method, same physics).
   ≥ 10× margin on the measured minimum (`comparison/results/hybrid_check.csv`,
   `tests/hybrid.rs`).
 - Switch: the geometric branch is taken only when the budget fits `tol`
-  (default `tol = 1e-9` stays on the exact RC); a **caustic** (`|det H| < 1e-12`)
-  or an empty image set returns `None`/falls back.
+  (default `tol = 1e-9` stays on the exact RC); a **caustic** (degenerate
+  image) or a failed certificate returns `None`/falls back.
 - Caveat: the budget covers the *asymptotic* error at the found images, not a
-  **missing** image.  The Newton finder is dense (24×24), jittered and
-  residual-verified after a silent miss was found (the unit point mass at
-  y = 1: 9.6% error with a 1.5e-3 budget); the point-mass-only entry points use
-  the certificate-checked structural finder (per-star companion ladders +
-  index-identity certificate; a violated certificate raises — 2026-10-17, after
-  the old Witt–Mao polynomial route was found numerically dead for N ≳ 5 in
-  f64 and to fail silently).
+  **missing** image.  The finder is completeness-certified for the general
+  model too (O1, 2026-10-19): non-degeneracy (`|det H| ≥ 1e-8`), the index
+  identity, and per-cusp-group companion checks — a violated certificate is a
+  loud error, never a silently short list (see §9; the certification was added
+  after the old dense grid was found to silently miss the faint image of the
+  unit point mass at y = 1: 9.6% error with a 1.5e-3 budget).
 
 ## 7. The geometric-optics path (`geometric`, `images`)
 
 `.error = 0` by definition: it is an asymptotic form, not a quadrature.  The
 signed-magnification sum rule was tested as a completeness certificate and
 **rejected** (it fails for multi-point-mass fields — 0.877 for the 3-mass case
-— and for cuspy/infinite-mass profiles: SIS 2.000, NFW 2.01).
+— and for cuspy/infinite-mass profiles: SIS 2.000, NFW 2.01).  The certificate
+actually used is the topological **index identity** plus per-cusp-group
+companion checks (§9): for the general model the identity's right-hand side is
+`sign(λ0λ2) − #(active cusp groups)` (a cusp group is active when its dominant
+class is a point, or an SIS/CIS{xc=0} cusp with the source inside its Einstein
+ring; cored/smooth profiles never; coincident cusps grouped).
 
 ## 8. Validation evidence (external referees)
 
@@ -151,9 +155,24 @@ limited), ~6e-9 (P-LPI floor), 1e-3…1e-2 (wolensing).
 
 ## 9. Known limitations (not budgeted, by design or pending)
 
-- **Image completeness** for general fields: the Newton finder is dense and
-  verified but not certified; only point-mass-only fields have a complete
-  source.
+- **Image completeness**: **certified** for the general model as well (O1,
+  2026-10-19).  `images` / `geometric` enforce non-degeneracy, the index
+  identity `#(det H>0) − #(det H<0) = sign(λ0λ2) − #(active cusp groups)` and a
+  per-cusp-group companion check with the *local* scale (`√(|m|/λ_loc)` /
+  `|psi0|/λ_loc`, `λ_loc` the smooth Hessian eigenvalue at the centre).  A
+  cusp group is active when its dominant class is a point (always) or an
+  SIS/CIS{xc=0} cusp with the source inside its Einstein ring; the sign of the
+  weight does not matter (the deflection is anti-holomorphic, `~1/d̄`; a
+  negative weight is a π-rotation).  Coincident cusps form one group with the
+  most singular class dominating; a locally defocusing cusp (no positive
+  smooth-Hessian eigenvalue) or a repulsive one has no pinned companion.
+  Profile components carry
+  the index identity only (no pinned companion scale).  A violated certificate
+  (or a caustic) is a loud error; `geometric_corrected` maps caustics to `None`
+  and `hybrid` falls back to the exact RC.  Battery:
+  `src/lens_field.rs::tests::finder_certificate_battery` (31 families with
+  hand-derived RHS values) + the 40-mass cross-check against the point-mass
+  finder.
 - **Low-ω free-space subtraction**: landed in the Rust engine (O2,
   2026-10-18) — `SliceConfig::subtract_free`, honoured by `slice_field` /
   `lens_field_solve` and the Python `solve(..., subtract_free=True)`; the

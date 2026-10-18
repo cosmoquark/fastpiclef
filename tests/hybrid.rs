@@ -14,8 +14,9 @@
 //! the raw integral `I = F * (2 pi i / omega)`.
 
 use fast_picard_lefshetz_integral_code::{
-    Component, HybridMethod, LensField, Profile, SliceConfig, lens_field_geometric,
-    lens_field_geometric_corrected, lens_field_hybrid, lens_field_solve, point_mass_field_hybrid,
+    Component, Error, HybridMethod, LensField, Profile, SliceConfig, lens_field_geometric,
+    lens_field_geometric_corrected, lens_field_hybrid, lens_field_images, lens_field_solve,
+    point_mass_field_hybrid,
 };
 use num_complex::Complex64;
 use std::f64::consts::PI;
@@ -55,8 +56,8 @@ fn macro_only_correction_is_exact() {
     ] {
         let field = LensField::new([0.4, -0.3], kappa, g1, g2, vec![]).unwrap();
         for omega in [3.0, 100.0] {
-            let g = lens_field_geometric_corrected(&field, omega).unwrap();
-            let geo = lens_field_geometric(&field, omega);
+            let g = lens_field_geometric_corrected(&field, omega).unwrap().unwrap();
+            let geo = lens_field_geometric(&field, omega).unwrap();
             assert!(
                 (g.value - geo).norm() < 1e-12,
                 "kappa={kappa}: corrected != geometric"
@@ -88,8 +89,8 @@ fn point_mass_corrected_beats_geometric_vs_nd() {
     ];
     for &(omega, y, fnd) in CASES {
         let field = unit_field(y);
-        let eg = (lens_field_geometric(&field, omega).norm() - fnd).abs() / fnd;
-        let g = lens_field_geometric_corrected(&field, omega).unwrap();
+        let eg = (lens_field_geometric(&field, omega).unwrap().norm() - fnd).abs() / fnd;
+        let g = lens_field_geometric_corrected(&field, omega).unwrap().unwrap();
         let ec = (g.value.norm() - fnd).abs() / fnd;
         assert!(
             ec < eg,
@@ -119,8 +120,8 @@ fn corrected_residual_falls_with_omega_and_covers_against_rc() {
             let rc =
                 lens_field_solve(&field, &SliceConfig { omega, ..Default::default() }).unwrap();
             let truth = amp(rc.value, omega);
-            let geo = lens_field_geometric(&field, omega);
-            let g = lens_field_geometric_corrected(&field, omega).unwrap();
+            let geo = lens_field_geometric(&field, omega).unwrap();
+            let g = lens_field_geometric_corrected(&field, omega).unwrap().unwrap();
             let r_geo = (geo - truth).norm();
             let r_corr = (g.value - truth).norm();
             assert!(
@@ -155,7 +156,7 @@ fn hybrid_switches_and_respects_its_budget() {
         "residual {resid:e} > budget {:e}",
         loose.error
     );
-    let geo_resid = (lens_field_geometric(&field, omega) * free2(omega) - rc.value).norm();
+    let geo_resid = (lens_field_geometric(&field, omega).unwrap() * free2(omega) - rc.value).norm();
     assert!(
         resid < geo_resid,
         "correction must improve: {resid:e} vs {geo_resid:e}"
@@ -174,7 +175,7 @@ fn point_mass_field_hybrid_matches_the_lens_field_path() {
     assert_eq!(h.images, 6);
     let comps: Vec<Component> = lenses.iter().map(|&(x, y, m)| point(x, y, m)).collect();
     let field = LensField::new(source, 0.0, 0.0, 0.0, comps).unwrap();
-    let g = lens_field_geometric_corrected(&field, omega).unwrap();
+    let g = lens_field_geometric_corrected(&field, omega).unwrap().unwrap();
     assert!(
         (h.value - g.value * free2(omega)).norm() < 1e-9,
         "paths disagree"
@@ -186,7 +187,7 @@ fn point_mass_field_hybrid_matches_the_lens_field_path() {
         "residual {resid:e} > budget {:e}",
         h.error
     );
-    let geo_resid = (lens_field_geometric(&field, omega) * free2(omega) - rc.value).norm();
+    let geo_resid = (lens_field_geometric(&field, omega).unwrap() * free2(omega) - rc.value).norm();
     assert!(
         resid < geo_resid,
         "correction must improve: {resid:e} vs {geo_resid:e}"
@@ -195,19 +196,18 @@ fn point_mass_field_hybrid_matches_the_lens_field_path() {
 
 #[test]
 fn hybrid_falls_back_at_the_point_mass_caustic() {
-    // Source exactly on the point-mass caustic (beta = 0): both images sit on
-    // the critical curve (det H = 0) and the asymptotic form is invalid; the
-    // hybrid must take the exact RC branch (and if the finder still returns a
-    // near-caustic image, the estimate must be huge).
+    // Source exactly on the point-mass caustic (beta = 0): the images are the
+    // whole Einstein ring (degenerate, det H = 0) and the asymptotic form is
+    // invalid.  The certified finder reports that as `DegenerateImage`,
+    // `geometric_corrected` maps it to its documented `None`, and the hybrid
+    // must take the exact RC branch.
     let field = unit_field(0.0);
     let omega = 50.0;
-    if let Some(g) = lens_field_geometric_corrected(&field, omega) {
-        assert!(
-            g.error > 1.0,
-            "caustic estimate must be huge, got {:.2e}",
-            g.error
-        );
-    }
+    assert!(matches!(
+        lens_field_images(&field).unwrap_err(),
+        Error::DegenerateImage
+    ));
+    assert!(lens_field_geometric_corrected(&field, omega).unwrap().is_none());
     let h = lens_field_hybrid(&field, omega, 1e-3, None).unwrap();
     assert_eq!(h.method, HybridMethod::Rc);
     let rc = lens_field_solve(&field, &SliceConfig { omega, ..Default::default() }).unwrap();

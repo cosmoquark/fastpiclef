@@ -493,8 +493,9 @@ batched paths & grids/sweeps & as above & shared contours,
   bitwise-parallel & maps, sweeps, parameter grids\\
 geometric $+$ correction & $\omega\to\infty$ & any images & asymptotic with
   budget & high-$\omega$ hybrid\\
-geometric (images) & any & point-mass fields & $O(\#\text{images})$,
-  exact-step finder & macro model; fallback\\
+geometric (images) & any & point masses $+$ macro
+  $+$ profiles & $O(\#\text{images})$,
+  certified finder & macro model; fallback\\
 \bottomrule
 \end{tabular}
 \caption{The solver family.  The production exact path is the 2D RC engine;
@@ -579,23 +580,32 @@ $3\sum_j |G_{0,j}||C_j|/\omega$ fits the caller's tolerance (default
 covered the corrected residual by $\ge 3.5\times$ in every measured family,
 so the budget keeps a $\ge 10\times$ margin on the measured minimum
 (dataset: \code{comparison/results/hybrid_check.csv}).  At a caustic
-($|\det\partial^2\varphi| < 10^{-12}$) the branch refuses and the exact
-engine takes over.  One caveat is structural: the budget bounds the
-\emph{asymptotic} error at the images it found, not the existence of a
-missing image; the Newton image finder is therefore dense ($24\times24$,
-golden-ratio jittered) and residual-verified --- installed after a silent
-miss was found (the faint image of the unit point mass at $y=1$: a $9.6\%$
-error inside a $1.5\times10^{-3}$ budget with an aligned $8\times8$ start
-grid).  Point-mass-only entry points use a dedicated finder --- per-star
-companion-image ladders plus a completeness certificate (index identity and
-per-star companions; violations raise) --- after the polynomial-complete
-Witt--Mao route was retired on 2026-10-17, measured numerically dead and
-\emph{silent} for $N\gtrsim5$ in double precision.
+(degenerate image) the branch refuses and the exact
+engine takes over.  The budget bounds the
+\emph{asymptotic} error at the images found; that the image set itself is
+complete is a separate, now-certified question.  The finder is dense
+($24\times24$, golden-ratio jittered), residual-verified and
+\emph{completeness-certified} for the general model (2026-10-19): every
+image must be non-degenerate, the Hessian-sign sum must obey the index
+identity $\#\{\det H>0\}-\#\{\det H<0\}=\mathrm{sgn}(\lambda_0\lambda_2)
+-\#\{\text{active cusp groups}\}$ (a group is active when its dominant class
+is a point, or an SIS/CIS cusp with the source inside its Einstein ring;
+cored/smooth profiles never; coincident cusps grouped; the sign of the weight
+is irrelevant), and every active cusp must own an image
+within its local scale --- violations raise, never a short list.  The
+point-mass-only entry points keep their dedicated finder with the same
+contract (per-star companion ladders; the $1-N$ identity); the
+polynomial-complete Witt--Mao route was retired on 2026-10-17, measured
+numerically dead and \emph{silent} for $N\gtrsim5$ in double precision.
 
 \subsection{Geometric optics and image finding}
 The geometric sum of Eq.~\eqref{eq:geo} and the images themselves are
 exposed for macro modelling and as a fallback at high $\omega$, with an
-honest zero error by definition (it is an asymptote, not a quadrature).  A
+honest zero error by definition (it is an asymptote, not a quadrature).  The
+image set comes from the completeness-certified finder above: a caustic is
+reported (the point-mass contract) rather than silently dropped ---
+\code{images} and \code{geometric} raise, \code{geometric\_corrected}
+returns \code{None}, and the hybrid falls back to the exact engine.  A
 tempting completeness certificate --- the signed-magnification sum rule ---
 was tested and \emph{rejected}: it fails for multi-point-mass fields
 ($0.877$ for a three-mass case) and for cuspy or infinite-mass profiles
