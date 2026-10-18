@@ -209,6 +209,13 @@ fn batch_rejects_bad_input() {
     // tail angle out of (0, pi/4]
     let bad_cfg = SliceConfig { tail_angle: 0.9, ..cfg };
     assert!(slice_field_batch(&field, &good, &bad_cfg).is_err());
+    // subtract_free is single-field only: the batched paths must reject it
+    // rather than silently ignore it.
+    let sub_cfg = SliceConfig { omega: 1.0, subtract_free: true, ..Default::default() };
+    assert!(slice_field_batch(&field, &good, &sub_cfg).is_err());
+    let lens = RationalLens { beta: 0.0, kappa: -2.0 };
+    assert!(rc_1d_batch(&lens, &[0.0], 1.0, &sub_cfg).is_err());
+    assert!(rc_1d_sweep(&lens, &[1.0], &sub_cfg).is_err());
 }
 
 #[test]

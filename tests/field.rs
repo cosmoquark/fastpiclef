@@ -43,6 +43,20 @@ const REF_ND: &[(f64, f64, f64, f64)] = &[
     (30.0, 1.0, 6.65314702567186000e-02, -1.95738061172352179e-01),
 ];
 
+/// Low-omega raw-integral references (the E3 grid), from the same 30-digit
+/// Nakamura-Deguchi conversion (`comparison/referee.py::slice_raw_from_nd`,
+/// emitted 2026-10-18 for the O2 free-space-subtraction tests).  At
+/// omega = 1e-4 the raw value is ~6.3e4 while `F - 1` is ~4.7e-4: these pin
+/// the *absolute* integral accuracy at the 1e-13 level that the direct path
+/// cannot reach (its quadrature floor is the accumulated `eps |I_free|`).
+const REF_LOW_OMEGA: &[(f64, f64, f64, f64)] = &[
+    (1.0e-04, 0.1, 2.93016473835276585e+01, 6.28367811051384415e+04),
+    (1.0e-04, 1.0, 2.93016473129695356e+01, 6.28367809496174086e+04),
+    (1.0e-04, 3.0, 2.93016468840285498e+01, 6.28367796928817334e+04),
+    (1.0e-03, 1.0, 2.20828449536341473e+01, 6.28808040701938899e+03),
+    (1.0e-02, 3.0, 1.49453014245563089e+01, 6.32940859163893037e+02),
+];
+
 fn single_mass(y: f64) -> PointMassField {
     PointMassField {
         beta: [y, 0.0],
@@ -90,6 +104,71 @@ fn single_mass_matches_nakamura_deguchi_high_omega() {
     let out = slice_field(&single_mass(y), &SliceConfig { omega, ..Default::default() }).unwrap();
     let want = Complex64::new(8.95259962335362286e-02, 6.52039497653385536e-02);
     assert!(rel(out.value, want) < 1e-12, "rel={:.3e}", rel(out.value, want));
+}
+
+/// O2: the low-omega free-space subtraction.  At `omega <= 1e-2` the direct
+/// path's `F - 1` is limited by the quadrature's accumulated `eps |I_free|`;
+/// the subtracted path integrates the small
+/// `e^{i w phi_free}(e^{-i w Psi} - 1)` on the same contour and adds the
+/// exact `2 pi i / w`.  Both routes are graded against the pinned 30-digit
+/// values, `F - 1 = |I - I_ref| / (|F_ref - 1| * 2 pi / w)`, and the
+/// subtracted budget must cover the true integral error.
+#[test]
+fn subtract_free_low_omega_matches_the_nd_referee() {
+    for &(omega, y, re, im) in REF_LOW_OMEGA {
+        let want = Complex64::new(re, im);
+        let fref = want * Complex64::new(0.0, -omega / (2.0 * PI));
+        let i_scale = (fref - 1.0).norm() * 2.0 * PI / omega;
+        let cfg = SliceConfig { omega, ..Default::default() };
+        let d = slice_field(&single_mass(y), &cfg).unwrap();
+        let s = slice_field(&single_mass(y), &SliceConfig { subtract_free: true, ..cfg }).unwrap();
+        let e_d = (d.value - want).norm() / i_scale;
+        let e_s = (s.value - want).norm() / i_scale;
+        assert!(e_d < 5e-12, "direct w={omega}, y={y}: F-1 rel {e_d:.3e}");
+        assert!(e_s < 1e-12, "subtracted w={omega}, y={y}: F-1 rel {e_s:.3e}");
+        assert!(
+            e_s < e_d,
+            "subtraction must beat the direct path at w={omega}, y={y}: {e_s:.3e} vs {e_d:.3e}"
+        );
+        for o in [&d, &s] {
+            let allow = 8.0 * f64::EPSILON * o.value.norm();
+            assert!(
+                o.error + allow >= (o.value - want).norm(),
+                "w={omega}, y={y}: budget {:.3e} does not cover the true error {:.3e}",
+                o.error,
+                (o.value - want).norm()
+            );
+        }
+    }
+}
+
+/// With no lenses the subtracted integrand is identically zero
+/// (`Psi == 0`), so the solve returns the closed form `2 pi i / w` exactly.
+#[test]
+fn subtract_free_empty_field_is_exact() {
+    let empty = PointMassField { beta: [0.3, -0.2], lenses: vec![] };
+    for omega in [1e-4_f64, 1.0] {
+        let o = slice_field(&empty, &SliceConfig { omega, subtract_free: true, ..Default::default() })
+            .unwrap();
+        let want = Complex64::i() * (2.0 * PI / omega);
+        assert_eq!(o.value, want, "omega={omega}");
+    }
+}
+
+/// Both routes are exact at moderate omega; the subtraction must not disturb
+/// them, and its budget must still cover the (quadrature-level) difference.
+#[test]
+fn subtract_free_matches_direct_at_moderate_omega() {
+    let field = two_mass_field();
+    for omega in [0.3_f64, 1.0, 3.0] {
+        let d = slice_field(&field, &SliceConfig { omega, ..Default::default() }).unwrap();
+        let s = slice_field(&field, &SliceConfig { omega, subtract_free: true, ..Default::default() })
+            .unwrap();
+        let diff = (d.value - s.value).norm();
+        assert!(diff / d.value.norm() < 1e-11, "omega={omega}: {:.3e}", diff / d.value.norm());
+        let allow = 8.0 * f64::EPSILON * (d.value.norm() + s.value.norm());
+        assert!(s.error + allow >= diff, "omega={omega}: budget {:.3e} < {diff:.3e}", s.error);
+    }
 }
 
 #[test]

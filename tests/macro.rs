@@ -279,3 +279,56 @@ fn rejects_critical_and_invalid() {
         .is_err()
     );
 }
+
+/// O2: the low-omega free-space subtraction for `LensField`.
+///
+/// (a) A macro-only field has `Psi = 0`, so the subtracted solve returns the
+/// exact free/macro closed form; pinned against the 30-digit referee
+/// (`comparison/referee.py::macro_only_integral`, mpmath dps 30, emitted
+/// 2026-10-18) — this pins the `free_integral` formula including the
+/// shear-rotation handling.
+#[test]
+fn lens_field_subtract_free_free_limit_matches_referee() {
+    let cases: &[(f64, f64, f64, f64)] = &[
+        // gamma = (0.2, 0.0): no rotation.
+        (0.2, 0.0, 7.96145669514098042e-01, 9.36641964104927465e+04),
+        // gamma = (0.2, 0.1): rotated frame.
+        (0.2, 0.1, 5.92016140689123005e-01, 9.47225825080982177e+04),
+    ];
+    for &(g1, g2, re, im) in cases {
+        let lf = LensField::new([0.4, -0.3], 0.3, g1, g2, vec![]).unwrap();
+        let o = lens_field_solve(
+            &lf,
+            &SliceConfig { omega: 1e-4, subtract_free: true, ..Default::default() },
+        )
+        .unwrap();
+        let d = rel(o.value, Complex64::new(re, im));
+        assert!(d < 1e-14, "gamma=({g1},{g2}): {d:.3e}");
+    }
+}
+
+/// (b) `LensField` with `kappa = gamma = 0` and one point component is the
+/// same physical model as `PointMassField`; their free/potential splits
+/// differ in arithmetic, so they must agree at quadrature level — at low
+/// omega, where the subtraction is what makes the comparison meaningful.
+#[test]
+fn lens_field_subtract_free_point_equals_point_mass_field() {
+    use fast_picard_lefshetz_integral_code::phases::PointMassField;
+    use fast_picard_lefshetz_integral_code::slice_field;
+    let lf = LensField::new([1.0, 0.0], 0.0, 0.0, 0.0, vec![point(0.0, 0.0, 1.0)]).unwrap();
+    let pm = PointMassField { beta: [1.0, 0.0], lenses: vec![(0.0, 0.0, 1.0)] };
+    for omega in [1e-4_f64, 1e-2] {
+        let a = lens_field_solve(
+            &lf,
+            &SliceConfig { omega, subtract_free: true, ..Default::default() },
+        )
+        .unwrap();
+        let b = slice_field(
+            &pm,
+            &SliceConfig { omega, subtract_free: true, ..Default::default() },
+        )
+        .unwrap();
+        let d = (a.value - b.value).norm() / b.value.norm();
+        assert!(d < 1e-11, "omega={omega}: {d:.3e}");
+    }
+}

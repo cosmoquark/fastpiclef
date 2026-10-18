@@ -150,6 +150,38 @@ def test_point_mass_field_matches_nakamura_deguchi():
     assert abs(r.integral - want) / abs(want) < 1e-12, r
 
 
+def test_point_mass_field_subtract_free_low_omega():
+    # O2: at omega <= 1e-2 the free-space subtraction removes the direct
+    # path's eps|I_free| quadrature floor from F - 1.  Reference: the 30-digit
+    # Nakamura-Deguchi raw integral (comparison/referee.py::slice_raw_from_nd,
+    # emitted 2026-10-18); F = w I / (2 pi i).
+    w, y = 1e-4, 1.0
+    want = 2.93016473129695356e+01 + 6.28367809496174086e+04j
+    fref = w * want / (2j * math.pi)
+    scale = abs(fref - 1.0)
+    f = fpl.PointMassField([(0.0, 0.0, 1.0)], beta=(y, 0.0))
+    d = f.solve(omega=w)
+    s = f.solve(omega=w, subtract_free=True)
+    e_d = abs(w * d.integral / (2j * math.pi) - fref) / scale
+    e_s = abs(w * s.integral / (2j * math.pi) - fref) / scale
+    assert e_s < e_d, (e_d, e_s)
+    assert e_s < 1e-12, e_s
+    assert s.error >= abs(s.integral - want) - 8 * 2.220446049250313e-16 * abs(s.integral)
+    # The LensField split (kappa = gamma = 0 + a point component) is the same
+    # physical model; the free/potential arithmetic differs, so compare at
+    # quadrature level.
+    lf = fpl.LensField([fpl.PointComp(0.0, 0.0, 1.0)], beta=(y, 0.0))
+    s2 = lf.solve(omega=w, subtract_free=True)
+    assert abs(s2.integral - s.integral) <= 1e-11 * abs(s.integral), (s.integral, s2.integral)
+    # The flag is slice-only: method="mesh" + subtract_free is rejected.
+    try:
+        f.solve(omega=w, method="mesh", subtract_free=True)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for mesh + subtract_free")
+
+
 def test_point_mass_field_methods():
     field = fpl.PointMassField([(1.0, 0.5, 0.1), (-0.8, -0.6, 0.1)], beta=(0.3, 0.0))
     default = field.solve(omega=2.0)

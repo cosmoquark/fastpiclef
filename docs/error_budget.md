@@ -46,6 +46,20 @@ a different contour, the same integral), the **margin** sweeps, and
 **transposed slicing** (`tests/field.rs`, `tests/slice.rs`,
 `tests/macro.rs::macro_alpha_family_and_margins_agree`).
 
+**Low-ω free-space subtraction (`cfg.subtract_free`, O2).**  At ω ≤ 1e-2 the
+direct path's `F − 1` is limited by the quadrature's accumulated `ε·|I_free|`
+(the raw value is ~2π/ω while `F − 1` is ~ω).  The subtracted mode integrates
+`e^{iωφ_free}(e^{−iωΨ} − 1)` (Ψ = the profile/mass potential; `e^{−iθ} − 1`
+evaluated as `−2i e^{−iθ/2} sin(θ/2)` to avoid the `ε/|θ|` cancellation) on
+the *same* contour and adds the exact closed-form free/macro integral, whose
+`8ε·|I_free|` roundoff joins the budget.  Measured `F − 1` relative errors
+against the 30-digit ND referee (`results/low_omega_rust.csv`, 2026-10-18):
+direct 0.9–1.9e-12 → subtracted 2.9e-15–4.7e-13 at ω = 1e-4; 1.2–2.5e-13 →
+4.8e-16–6.2e-14 at 1e-3; ~8.9e-15 → 4–10e-16 at 1e-2.  The budgets cover the
+true integral error by 95–10⁴× (subtracted) / 30–133× (direct); the subtracted
+path's own floor is the final `free + J` addition (`~ε/|F − 1|`).  Batched
+entry points reject the flag (single-field only).
+
 ## 2. The 1D slice kernels (`slice_inner_rc`, `rc_1d_batch`)
 
 Same structure in one variable, plus the **swept-branch-point indicator**
@@ -136,9 +150,11 @@ limited), ~6e-9 (P-LPI floor), 1e-3…1e-2 (wolensing).
 - **Image completeness** for general fields: the Newton finder is dense and
   verified but not certified; only point-mass-only fields have a complete
   source.
-- **Low-ω free-space subtraction** exists in the Python comparison layer only
-  (Rust polish pending; the direct path is still validated to ~1e-12 at
-  ω = 1e-4, `comparison/results/p0_low_omega.csv`).
+- **Low-ω free-space subtraction**: landed in the Rust engine (O2,
+  2026-10-18) — `SliceConfig::subtract_free`, honoured by `slice_field` /
+  `lens_field_solve` and the Python `solve(..., subtract_free=True)`; the
+  batched entry points reject it rather than ignoring it.  Measured floors and
+  the mechanism are in §1; dataset `comparison/results/low_omega_rust.csv`.
 - **Many-mass cost** (N-scaling, P4.2): the exact engine is ~O(N²) node slots;
   a scalable mode needs an FMM-with-winding or an explicit approximate mode
   (see the plan's deferred tiers).  Accuracy is not affected.
