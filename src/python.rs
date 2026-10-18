@@ -1234,24 +1234,29 @@ impl PyLensField {
 
     /// The geometric-optics images (real solutions of the lens equation).
     ///
-    /// Found by a dense, residual-verified multi-start Newton grid (not
-    /// completeness-certified for arbitrary fields; for point-mass-only fields
-    /// `PointMassField.images()` enforces a completeness certificate).
-    fn images(&self) -> Vec<(f64, f64)> {
-        lens_field_images(&self.inner).into_iter().map(|p| (p[0], p[1])).collect()
+    /// Found by the completeness-certified multi-start Newton finder (index
+    /// identity + per-cusp-group companion check — the same contract as
+    /// `PointMassField.images()`): a failed certificate or a degenerate image
+    /// set (a caustic, where the stationary-phase sum is undefined) raises
+    /// instead of returning a silently short list.
+    fn images(&self) -> PyResult<Vec<(f64, f64)>> {
+        Ok(lens_field_images(&self.inner)
+            .map_err(map_err)?
+            .into_iter()
+            .map(|p| (p[0], p[1]))
+            .collect())
     }
 
     /// Stationary-phase (geometric-optics) amplification; exact as omega -> oo
     /// away from caustics.  `.error` is 0 (an asymptotic form, not quadrature).
-    /// Uses `LensField.images()` (not completeness-certified) and skips
-    /// degenerate (`|det H| < 1e-12`) images; for point-mass-only fields
-    /// `PointMassField.geometric` uses the certificate-checked finder and
-    /// raises on caustics.
+    /// The image set comes from the completeness-certified finder; a failed
+    /// certificate raises, and so does a degenerate image set (a caustic — use
+    /// `hybrid` or `solve` there).
     fn geometric(&self, omega: f64) -> PyResult<PyOutput> {
         if !(omega > 0.0) {
             return Err(PyValueError::new_err("omega must be > 0"));
         }
-        let f = lens_field_geometric(&self.inner, omega);
+        let f = lens_field_geometric(&self.inner, omega).map_err(map_err)?;
         Ok(make_output(2, omega, f * free_space(2, omega), 0.0, "geometric", self.inner.components.len()))
     }
 
@@ -1261,23 +1266,24 @@ impl PyLensField {
     /// `sum_j |G0_j| |C_j| / w` reported in `.error` (integral units — the same
     /// relative bound on the amplification).  `None` (Python `None`) at a
     /// caustic, where the asymptotic form is invalid; use `hybrid` or `solve`
-    /// there.  Images come from `LensField.images()` (residual-verified, not
-    /// completeness-certified; for point-mass-only fields use
-    /// `PointMassField.geometric_corrected`).
+    /// there.  Images come from the completeness-certified finder; a failed
+    /// certificate raises.
     fn geometric_corrected(&self, omega: f64) -> PyResult<Option<PyOutput>> {
         if !(omega > 0.0) {
             return Err(PyValueError::new_err("omega must be > 0"));
         }
-        Ok(lens_field_geometric_corrected(&self.inner, omega).map(|g| {
-            make_output(
-                2,
-                omega,
-                g.value * free_space(2, omega),
-                g.error * free_space(2, omega).norm(),
-                "geometric+correction",
-                g.images,
-            )
-        }))
+        Ok(lens_field_geometric_corrected(&self.inner, omega)
+            .map_err(map_err)?
+            .map(|g| {
+                make_output(
+                    2,
+                    omega,
+                    g.value * free_space(2, omega),
+                    g.error * free_space(2, omega).norm(),
+                    "geometric+correction",
+                    g.images,
+                )
+            }))
     }
 
     /// High-omega hybrid (P4.1): geometric optics with the validated
@@ -1287,10 +1293,10 @@ impl PyLensField {
     /// honest for the located images: on the geometric branch the asymptotic
     /// error is at most `tol` (the estimate was measured to cover the
     /// corrected residual by >= 3.5x in every measured family, and the
-    /// reported budget carries a further factor 3; the general multi-start
-    /// Newton finder is residual-verified but not completeness-certified —
-    /// for point-mass-only fields `PointMassField.hybrid` uses the
-    /// certificate-checked finder).  The default `tol = 1e-9` stays on the
+    /// reported budget carries a further factor 3; the finder is
+    /// completeness-certified, and a caustic or a failed certificate simply
+    /// falls through to the exact RC branch — caustics are its home turf).
+    /// The default `tol = 1e-9` stays on the
     /// exact RC; raise it (e.g. `1e-3`) to unlock the fast branch at high
     /// omega.
     #[pyo3(signature = (omega, tol = 1e-9))]

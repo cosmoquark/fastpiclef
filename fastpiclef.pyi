@@ -613,9 +613,11 @@ class LensField:
     def images(self) -> list[tuple[float, float]]:
         """The geometric-optics images (real solutions of the lens equation).
 
-        Found by a dense, residual-verified multi-start Newton grid (not
-        completeness-certified for arbitrary fields; for point-mass-only fields
-        `PointMassField.images()` enforces a completeness certificate).
+        Found by the completeness-certified multi-start Newton finder (index
+        identity + per-cusp-group companion check — the same contract as
+        `PointMassField.images()`): a failed certificate or a degenerate image
+        set (a caustic, where the stationary-phase sum is undefined) raises
+        instead of returning a silently short list.
         """
         ...
 
@@ -623,11 +625,10 @@ class LensField:
         """Stationary-phase (geometric-optics) amplification; exact as
         `omega -> infinity` away from caustics.
 
-        `.error` is 0 (an asymptotic form, not quadrature).  Uses
-        `LensField.images()` (not completeness-certified) and skips degenerate
-        (`|det H| < 1e-12`) images; for point-mass-only fields
-        `PointMassField.geometric` uses the certificate-checked finder and
-        raises on caustics.
+        `.error` is 0 (an asymptotic form, not quadrature).  The image set
+        comes from the completeness-certified finder; a failed certificate
+        raises, and so does a degenerate image set (a caustic — use `hybrid`
+        or `solve` there).
         """
         ...
 
@@ -638,9 +639,8 @@ class LensField:
         `.error` (integral units).
 
         Returns `None` at a caustic, where the asymptotic form is invalid;
-        use `hybrid` or `solve` there.  Images come from `LensField.images()`
-        (residual-verified, not completeness-certified; for point-mass-only
-        fields use `PointMassField.geometric_corrected`).
+        use `hybrid` or `solve` there.  Images come from the
+        completeness-certified finder; a failed certificate raises.
         """
         ...
 
@@ -649,10 +649,9 @@ class LensField:
         stationary-phase next-order correction when its conservative estimate
         is within `tol` (integral units), and the exact RC engine otherwise.
 
-        `.method` is `"geometric+correction"` or `"slice"`.  Images come from
-        `LensField.images()` (residual-verified, not completeness-certified;
-        for point-mass-only fields `PointMassField.hybrid` uses the
-        certificate-checked finder).  The default `tol = 1e-9` stays on the
+        `.method` is `"geometric+correction"` or `"slice"`.  The finder is
+        completeness-certified; a caustic or a failed certificate simply falls
+        through to the exact RC branch.  The default `tol = 1e-9` stays on the
         exact RC; raise it (e.g. `1e-3`) to unlock the fast branch at high
         omega.
         """
