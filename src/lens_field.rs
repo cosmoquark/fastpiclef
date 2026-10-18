@@ -287,7 +287,7 @@ impl SliceModel for LensField {
         Ok(())
     }
 
-    fn evaluate(&self, base: f64, off: Complex64) -> LensEval<'_> {
+    fn evaluate(&self, base: f64, off: Complex64, _simd_log: bool) -> LensEval<'_> {
         LensEval {
             field: self,
             dk: self.components.iter().map(|c| Complex64::from(base - c.y) + off).collect(),

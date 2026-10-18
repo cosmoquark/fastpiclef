@@ -64,6 +64,18 @@ true integral error by 95–10⁴× (subtracted) / 30–133× (direct); the subt
 path's own floor is the final `free + J` addition (`~ε/|F − 1|`).  Batched
 entry points reject the flag (single-field only).
 
+**Vector log (item 8; `cfg.simd_log`, opt-in).**  The many-mass real-core
+phase sums can replace the scalar libm `ln` with a 4-wide AVX2 log
+(`src/simd_ln.rs`, hand-rolled `std::arch`, runtime-detected, scalar
+fallback).  Accuracy: ≤ 1 ulp vs libm on the argument domain (`w = t² + d²`) —
+measured 0.994 ulp relative for `|ln w| ≥ 1e-3`, 0.996 ulp near `w = 1`
+(absolute ≤ 1.1e-19), pinned by the module tests.  The end-to-end agreement is
+at the roundoff level (N = 1 vs the 30-digit ND referee < 1e-12; N = 3/10
+scalar vs vector < 1e-13, with identical refinement trees), so the budget
+class is unchanged.  Default `false` until the Step-3 wall gate (N = 100 in a
+quiet window, at least ~1.7×) passes; the bitwise baselines are regenerated
+deliberately if the default flips.
+
 ## 2. The 1D slice kernels (`slice_inner_rc`, `rc_1d_batch`)
 
 Same structure in one variable, plus the **swept-branch-point indicator**

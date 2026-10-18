@@ -47,6 +47,8 @@ pub mod slice_batch;
 pub mod solver;
 pub mod thimble;
 
+mod simd_ln;
+
 #[cfg(feature = "python")]
 mod python;
 

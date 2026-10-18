@@ -290,6 +290,16 @@ pub struct SliceConfig {
     /// refinement tree, cancelling the saving; kept to reproduce the
     /// measurement.  Default `false` (the classic rule).
     pub gl10_probe: bool,
+    /// Vector-log path for the many-mass real-core phase sums (item 8): a
+    /// 4-wide AVX2 `ln` (hand-rolled `std::arch`, no dependency;
+    /// [`crate::simd_ln`]) replacing the scalar libm log in
+    /// `PointMassEval::phi_core_real`.  **Opt-in prototype** (default
+    /// `false`) until the Step-3 wall gate (N = 100 in a quiet window, at
+    /// least ~1.7x) passes: the vector log changes the arithmetic by <= 1 ulp
+    /// per term, so the bitwise baselines are regenerated deliberately when
+    /// it becomes the default.  Ignored where AVX2 is unavailable (the
+    /// scalar fallback stays).
+    pub simd_log: bool,
     /// Cooperative interrupt probe, checked at orchestration boundaries only
     /// (between task rounds / bands / outer-contour legs, on the calling
     /// thread).  `None` (default) never probes; see [`InterruptHook`].
@@ -309,6 +319,7 @@ impl Default for SliceConfig {
             band_ratio: 10.0,
             subtract_free: false,
             gl10_probe: false,
+            simd_log: false,
             interrupt: None,
         }
     }
@@ -362,8 +373,10 @@ pub(crate) trait SliceModel: Sync {
     /// Gaussian centres `(beta0/lambda0, beta1/lambda2)` — the cores must
     /// contain them (they are where the quadratics turn over).
     fn centres(&self) -> (f64, f64);
-    /// Prepare the anchored per-slice constants.
-    fn evaluate(&self, base: f64, off: Complex64) -> Self::Eval<'_>;
+    /// Prepare the anchored per-slice constants.  `simd_log` requests the
+    /// vector-log path for the real-core phase sums (item 8; only the
+    /// point-mass model has one — others ignore the flag).
+    fn evaluate(&self, base: f64, off: Complex64, simd_log: bool) -> Self::Eval<'_>;
     /// Closed-form raw integral of the free/macro quadratic part of the phase
     /// — the value the `subtract_free` mode adds back — with its own roundoff
     /// budget (absolute, integral units).
@@ -461,8 +474,8 @@ impl SliceModel for PointMassField {
         Ok(())
     }
 
-    fn evaluate(&self, base: f64, off: Complex64) -> PointMassEval<'_> {
-        PointMassEval::new(self, base, off)
+    fn evaluate(&self, base: f64, off: Complex64, simd_log: bool) -> PointMassEval<'_> {
+        PointMassEval::new(self, base, off, simd_log)
     }
 
     fn free_integral(&self, omega: f64) -> (Complex64, f64) {
@@ -493,22 +506,44 @@ impl SliceModel for PointMassField {
 /// outer core (`off = ±rho^2` real) this is what keeps `|x2 - b_j|`
 /// cancellation-free next to the pinch heights, where a naive difference loses
 /// ~10 orders of relative precision and stalls adaptive refinement.
+///
+/// The component data is kept in a structure-of-arrays layout
+/// (`ak`/`mk`/`dk_real`, plus the complex `dk` for the complex paths) so the
+/// real-core phase sum can be evaluated with a 4-wide vector log; the scalar
+/// loops below read the same arrays and keep the production arithmetic
+/// bit-for-bit (pinned by `tests/bitwise_baseline.rs`).
 pub(crate) struct PointMassEval<'a> {
     field: &'a PointMassField,
-    /// `d_k = (base - b_k) + off` per mass, and `dbeta = (base - beta_1) + off`.
+    /// `a_k` (inner abscissae), SoA.
+    ak: Vec<f64>,
+    /// `m_k` (masses), SoA.
+    mk: Vec<f64>,
+    /// `d_k = (base - b_k) + off` per mass (complex paths).
     dk: Vec<Complex64>,
+    /// The real-core `d_k` (`off.im == 0`), SoA.
+    dk_real: Vec<f64>,
     dbeta: Complex64,
+    /// Use the AVX2 vector log in `phi_core_real` (requested + available).
+    simd: bool,
 }
 
 impl<'a> PointMassEval<'a> {
-    fn new(field: &'a PointMassField, base: f64, off: Complex64) -> Self {
-        let dk = field
-            .lenses
-            .iter()
-            .map(|&(_, b, _)| Complex64::from(base - b) + off)
-            .collect();
+    fn new(field: &'a PointMassField, base: f64, off: Complex64, simd_log: bool) -> Self {
+        let n = field.lenses.len();
+        let mut ak = Vec::with_capacity(n);
+        let mut mk = Vec::with_capacity(n);
+        let mut dk = Vec::with_capacity(n);
+        let mut dk_real = Vec::with_capacity(n);
+        for &(a, b, m) in &field.lenses {
+            let d = Complex64::from(base - b) + off;
+            ak.push(a);
+            mk.push(m);
+            dk_real.push(d.re);
+            dk.push(d);
+        }
         let dbeta = Complex64::from(base - field.beta[1]) + off;
-        Self { field, dk, dbeta }
+        let simd = simd_log && crate::simd_ln::avx2_available();
+        Self { field, ak, mk, dk, dk_real, dbeta, simd }
     }
 }
 
@@ -540,10 +575,18 @@ impl<'a> SliceEval for PointMassEval<'a> {
     #[inline]
     fn phi_core_real(&self, r: f64, x0: f64, sgn: f64) -> f64 {
         let mut v = self.phi_free_core_real(r, x0, sgn);
-        for (k, &(a, _, m)) in self.field.lenses.iter().enumerate() {
-            let t = (x0 - a) + sgn * r;
-            let d = self.dk[k].re;
-            v -= 0.5 * m * (t * t + d * d).ln();
+        #[cfg(target_arch = "x86_64")]
+        if self.simd {
+            // SAFETY: `simd` is only set when AVX2 was detected at runtime.
+            v -= unsafe {
+                crate::simd_ln::half_m_ln_sum(&self.ak, &self.mk, &self.dk_real, x0, sgn, r)
+            };
+            return v;
+        }
+        for k in 0..self.ak.len() {
+            let t = (x0 - self.ak[k]) + sgn * r;
+            let d = self.dk_real[k];
+            v -= 0.5 * self.mk[k] * (t * t + d * d).ln();
         }
         v
     }
@@ -554,10 +597,10 @@ impl<'a> SliceEval for PointMassEval<'a> {
     #[inline]
     fn phi_core_complex(&self, r: f64, x0: f64, sgn: f64) -> Complex64 {
         let mut v = self.phi_free_core_complex(r, x0, sgn);
-        for (k, &(a, _, m)) in self.field.lenses.iter().enumerate() {
-            let t = Complex64::from((x0 - a) + sgn * r);
+        for k in 0..self.ak.len() {
+            let t = Complex64::from((x0 - self.ak[k]) + sgn * r);
             let w = t * t + self.dk[k] * self.dk[k];
-            v -= 0.5 * m * w.ln();
+            v -= 0.5 * self.mk[k] * w.ln();
         }
         v
     }
@@ -566,10 +609,10 @@ impl<'a> SliceEval for PointMassEval<'a> {
     #[inline]
     fn phi_tail(&self, z: Complex64) -> Complex64 {
         let mut v = self.phi_free_tail(z);
-        for (k, &(a, _, m)) in self.field.lenses.iter().enumerate() {
-            let t = z - a;
+        for k in 0..self.ak.len() {
+            let t = z - self.ak[k];
             let w = t * t + self.dk[k] * self.dk[k];
-            v -= 0.5 * m * w.ln();
+            v -= 0.5 * self.mk[k] * w.ln();
         }
         v
     }
@@ -646,7 +689,7 @@ fn inner_rc_unchecked<M: SliceModel>(
 ) -> (Output, usize) {
     let omega = cfg.omega;
     let subtract_free = cfg.subtract_free;
-    let ev = model.evaluate(base, off);
+    let ev = model.evaluate(base, off, cfg.simd_log);
     let beta = model.beta();
     let abs = model.abscissae();
     let real_slice = off.im == 0.0;

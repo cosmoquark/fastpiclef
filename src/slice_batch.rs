@@ -323,7 +323,7 @@ fn run_group<M: SliceModel>(
     // ---- inner batched solve at one slice position (base, off) ----
     let inner = |base: f64, off: Complex64| -> (Vec<Complex64>, Vec<f64>) {
         solves.fetch_add(1, Ordering::Relaxed);
-        let ev = zero.evaluate(base, off);
+        let ev = zero.evaluate(base, off, cfg.simd_log);
         let real_slice = off.im == 0.0;
         let shift = off.im.abs();
         // Inner-tail geometry from the model (lambda signs/magnitudes); the
@@ -728,8 +728,8 @@ mod tests {
             (1.1, Complex64::new(0.49, 0.0)),
             (0.9, Complex64::new(0.5, 0.5)), // complex slice (an outer tail)
         ] {
-            let ev = field.evaluate(base, off);
-            let zv = zero.evaluate(base, off);
+            let ev = field.evaluate(base, off, false);
+            let zv = zero.evaluate(base, off, false);
             let x2 = Complex64::from(base) + off;
             for (r, x0, sgn) in [(0.11f64, base, 1.0f64), (0.23, base, -1.0), (0.07, base + 0.4, 1.0)] {
                 let z0 = Complex64::from(x0 + sgn * r);
