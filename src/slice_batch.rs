@@ -191,6 +191,11 @@ pub(crate) fn slice_field_batch_g<M: SliceModel>(
     if !(cfg.band_ratio > 1.0) || !cfg.band_ratio.is_finite() {
         return Err(Error::InvalidInput("band_ratio must be > 1 and finite"));
     }
+    if cfg.subtract_free {
+        return Err(Error::InvalidInput(
+            "subtract_free is not supported by the batched entry points (single-field solve only)",
+        ));
+    }
     model.validate_model()?;
 
     let m0 = batch.beta0s.len();

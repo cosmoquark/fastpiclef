@@ -272,6 +272,16 @@ pub struct SliceConfig {
     /// grouped greedily while `omega_max/omega_min <= band_ratio` (each band
     /// gets its own contour, sized for the band's hardest frequency).
     pub band_ratio: f64,
+    /// Low-ω free-space subtraction: integrate
+    /// `e^{i omega phi_free}(e^{-i omega Psi} - 1)` on the same contour
+    /// (`Psi` the profile/mass potential, `phi_free` the free/macro
+    /// quadratic) and add the exact closed-form free integral.  Removes the
+    /// `eps |I_free|` cancellation floor from `F - 1` at ω ≲ 1e-2 (exact by
+    /// the same Cauchy construction; `F - 1` then floors at the final
+    /// addition's `eps/|F - 1|`).  Honoured by the single-field entry points
+    /// ([`slice_field`], [`crate::lens_field::lens_field_solve`] and the
+    /// Python `solve`); the batched paths reject it.
+    pub subtract_free: bool,
     /// Cooperative interrupt probe, checked at orchestration boundaries only
     /// (between task rounds / bands / outer-contour legs, on the calling
     /// thread).  `None` (default) never probes; see [`InterruptHook`].
@@ -289,6 +299,7 @@ impl Default for SliceConfig {
             parallel: true,
             tail_angle: std::f64::consts::FRAC_PI_4,
             band_ratio: 10.0,
+            subtract_free: false,
             interrupt: None,
         }
     }
@@ -344,6 +355,10 @@ pub(crate) trait SliceModel: Sync {
     fn centres(&self) -> (f64, f64);
     /// Prepare the anchored per-slice constants.
     fn evaluate(&self, base: f64, off: Complex64) -> Self::Eval<'_>;
+    /// Closed-form raw integral of the free/macro quadratic part of the phase
+    /// — the value the `subtract_free` mode adds back — with its own roundoff
+    /// budget (absolute, integral units).
+    fn free_integral(&self, omega: f64) -> (Complex64, f64);
     /// Same model with a different source position.  The batched entry points
     /// use the zero-source copy as their shared phase: they assume
     /// `phi(z0, x2; beta) = phi(z0, x2; 0) - beta0 z0 - beta1 x2 + (beta0^2 + beta1^2)/2`,
@@ -367,6 +382,13 @@ pub(crate) trait SliceEval: Sync {
     fn phi_core_complex(&self, r: f64, x0: f64, sgn: f64) -> Complex64;
     /// Phase at complex `z_0` (the rotated tails).
     fn phi_tail(&self, z: Complex64) -> Complex64;
+    /// The free/macro quadratic part of the phase (the part whose 2D integral
+    /// is closed-form), at the same node as [`SliceEval::phi_core_real`].
+    fn phi_free_core_real(&self, r: f64, x0: f64, sgn: f64) -> f64;
+    /// Free part at the same node as [`SliceEval::phi_core_complex`].
+    fn phi_free_core_complex(&self, r: f64, x0: f64, sgn: f64) -> Complex64;
+    /// Free part at the same node as [`SliceEval::phi_tail`].
+    fn phi_free_tail(&self, z: Complex64) -> Complex64;
     /// `|x2-part|^2` entering the roundoff floor (`dbeta.norm_sqr()` today).
     fn slice_quad_sq(&self) -> f64;
 }
@@ -434,6 +456,13 @@ impl SliceModel for PointMassField {
         PointMassEval::new(self, base, off)
     }
 
+    fn free_integral(&self, omega: f64) -> (Complex64, f64) {
+        // int_RR e^{i omega |x - beta|^2 / 2} d^2x = 2 pi i / omega
+        // (translation-invariant: two 1D Fresnel factors sqrt(2 pi i / omega)).
+        let v = Complex64::new(0.0, std::f64::consts::TAU / omega);
+        (v, 8.0 * f64::EPSILON * v.norm())
+    }
+
     fn with_beta(&self, beta: [f64; 2]) -> Self {
         PointMassField {
             beta,
@@ -475,14 +504,33 @@ impl<'a> PointMassEval<'a> {
 }
 
 impl<'a> SliceEval for PointMassEval<'a> {
+    /// The free quadratic part `1/2[(z0-beta0)^2 + (x2-beta1)^2]` on the real
+    /// core; `phi_core_real` subtracts the mass logs from it.
+    #[inline]
+    fn phi_free_core_real(&self, r: f64, x0: f64, sgn: f64) -> f64 {
+        let u = (x0 - self.field.beta[0]) + sgn * r;
+        let d1 = self.dbeta.re;
+        0.5 * (u * u + d1 * d1)
+    }
+
+    #[inline]
+    fn phi_free_core_complex(&self, r: f64, x0: f64, sgn: f64) -> Complex64 {
+        let u = Complex64::from((x0 - self.field.beta[0]) + sgn * r);
+        0.5 * (u * u + self.dbeta * self.dbeta)
+    }
+
+    #[inline]
+    fn phi_free_tail(&self, z: Complex64) -> Complex64 {
+        let u = z - self.field.beta[0];
+        0.5 * (u * u + self.dbeta * self.dbeta)
+    }
+
     /// Phase on the real-axis core at `x = x0 + sgn*r` — real arithmetic,
     /// valid when `x2` is real (`off.im == 0`). Every `x - a_k` is formed as
     /// the exact constant `(x0 - a_k) + sgn*r`.
     #[inline]
     fn phi_core_real(&self, r: f64, x0: f64, sgn: f64) -> f64 {
-        let u = (x0 - self.field.beta[0]) + sgn * r;
-        let d1 = self.dbeta.re;
-        let mut v = 0.5 * (u * u + d1 * d1);
+        let mut v = self.phi_free_core_real(r, x0, sgn);
         for (k, &(a, _, m)) in self.field.lenses.iter().enumerate() {
             let t = (x0 - a) + sgn * r;
             let d = self.dk[k].re;
@@ -496,8 +544,7 @@ impl<'a> SliceEval for PointMassEval<'a> {
     /// plane, checked by the caller).
     #[inline]
     fn phi_core_complex(&self, r: f64, x0: f64, sgn: f64) -> Complex64 {
-        let u = Complex64::from((x0 - self.field.beta[0]) + sgn * r);
-        let mut v = 0.5 * (u * u + self.dbeta * self.dbeta);
+        let mut v = self.phi_free_core_complex(r, x0, sgn);
         for (k, &(a, _, m)) in self.field.lenses.iter().enumerate() {
             let t = Complex64::from((x0 - a) + sgn * r);
             let w = t * t + self.dk[k] * self.dk[k];
@@ -509,8 +556,7 @@ impl<'a> SliceEval for PointMassEval<'a> {
     /// Phase at complex `z_0` (rotated-tail segments), composite principal log.
     #[inline]
     fn phi_tail(&self, z: Complex64) -> Complex64 {
-        let u = z - self.field.beta[0];
-        let mut v = 0.5 * (u * u + self.dbeta * self.dbeta);
+        let mut v = self.phi_free_tail(z);
         for (k, &(a, _, m)) in self.field.lenses.iter().enumerate() {
             let t = z - a;
             let w = t * t + self.dk[k] * self.dk[k];
@@ -550,6 +596,16 @@ fn check_tail_angle(cfg: &SliceConfig) -> Result<()> {
     Ok(())
 }
 
+/// `e^{-i theta} - 1`, evaluated without cancellation as
+/// `-2 i e^{-i theta/2} sin(theta/2)`.  The naive difference floors at
+/// `eps/|theta|` *relative*, catastrophic in the low-ω subtraction where
+/// `|theta| = omega |Psi|` is small.
+#[inline]
+fn expm1_neg_i(theta: Complex64) -> Complex64 {
+    let half = 0.5 * theta;
+    -Complex64::i() * 2.0 * (-Complex64::i() * half).exp() * half.sin()
+}
+
 fn inner_rc<M: SliceModel>(
     model: &M,
     base: f64,
@@ -569,7 +625,10 @@ fn inner_rc<M: SliceModel>(
 
 /// [`inner_rc`] without the input validation — for callers that have already
 /// established validity (`slice_field`: omega checked once, sector satisfied
-/// by construction on its anchored positions).
+/// by construction on its anchored positions).  With `cfg.subtract_free` the
+/// integrand is `e^{i omega phi_free}(e^{-i omega Psi} - 1)` and the returned
+/// value is the *subtracted* inner `J(x2) = G(x2) - G_free(x2)`; the 2D
+/// caller adds the closed-form free integral back once.
 fn inner_rc_unchecked<M: SliceModel>(
     model: &M,
     base: f64,
@@ -577,6 +636,7 @@ fn inner_rc_unchecked<M: SliceModel>(
     cfg: &SliceConfig,
 ) -> (Output, usize) {
     let omega = cfg.omega;
+    let subtract_free = cfg.subtract_free;
     let ev = model.evaluate(base, off);
     let beta = model.beta();
     let abs = model.abscissae();
@@ -628,10 +688,25 @@ fn inner_rc_unchecked<M: SliceModel>(
             let f = |r: f64| -> (Complex64, f64) {
                 if real_slice {
                     let phi = ev.phi_core_real(r, x0, sgn);
-                    (Complex64::from_polar(1.0, omega * phi), 0.0)
+                    if !subtract_free {
+                        return (Complex64::from_polar(1.0, omega * phi), 0.0);
+                    }
+                    let phif = ev.phi_free_core_real(r, x0, sgn);
+                    (
+                        Complex64::from_polar(1.0, omega * phif)
+                            * expm1_neg_i(Complex64::from(omega * (phif - phi))),
+                        0.0,
+                    )
                 } else {
                     let phi = ev.phi_core_complex(r, x0, sgn);
-                    ((Complex64::i() * omega * phi).exp(), 0.0)
+                    if !subtract_free {
+                        return ((Complex64::i() * omega * phi).exp(), 0.0);
+                    }
+                    let phif = ev.phi_free_core_complex(r, x0, sgn);
+                    (
+                        (Complex64::i() * omega * phif).exp() * expm1_neg_i(omega * (phif - phi)),
+                        0.0,
+                    )
                 }
             };
             let res = integrate(&f, 0.0, half, &core_cfg, false);
@@ -652,7 +727,15 @@ fn inner_rc_unchecked<M: SliceModel>(
         // the Jacobian (-e4 dt) and the flipped t-orientation (integral over
         // t in [0, inf) runs z from A toward -infinite) contribute a sign, so
         // both tails enter as +e4 * integrand.
-        let f = |t: f64| (e4 * (iw * ev.phi_tail(end_z + sgn * e4 * t)).exp(), 0.0);
+        let f = |t: f64| {
+            let z = end_z + sgn * e4 * t;
+            let phi = ev.phi_tail(z);
+            if !subtract_free {
+                return (e4 * (iw * phi).exp(), 0.0);
+            }
+            let phif = ev.phi_free_tail(z);
+            (e4 * (iw * phif).exp() * expm1_neg_i(omega * (phif - phi)), 0.0)
+        };
         // Decay probe: the Gaussian part gives e^{-45} at the default length,
         // but large total mass slows the decay — double until negligible.
         let mut t_end = (2.0 * 45.0 / (omega * l_abs)).sqrt()
@@ -730,9 +813,10 @@ pub struct SliceFieldOutput {
 /// The outer integrand reports the inner solve's error through the Jacobian,
 /// so the returned error budget is the full nested estimate. `cfg.parallel`
 /// evaluates outer panels' nodes (i.e. inner solves) with rayon, bitwise
-/// identical to the serial evaluation. Returns the **raw** integral —
-/// normalisation to the free-space amplification happens in the caller
-/// (the Python layer, as for the other solvers).
+/// identical to the serial evaluation. `cfg.subtract_free` switches to the
+/// low-ω free-space subtraction (see [`SliceConfig::subtract_free`]). Returns
+/// the **raw** integral — normalisation to the free-space amplification
+/// happens in the caller (the Python layer, as for the other solvers).
 pub fn slice_field(field: &PointMassField, cfg: &SliceConfig) -> Result<SliceFieldOutput> {
     slice_field_g(field, cfg)
 }
@@ -883,6 +967,15 @@ pub(crate) fn slice_field_g<M: SliceModel>(field: &M, cfg: &SliceConfig) -> Resu
     for (v, e) in tails {
         value += v;
         error += e;
+    }
+
+    // Low-ω free-space subtraction: everything integrated above is the
+    // *subtracted* field integral `J = int e^{i omega phi_free}(e^{-i omega Psi}-1)`;
+    // add the exact free/macro closed form (with its own roundoff budget).
+    if cfg.subtract_free {
+        let (free, free_err) = field.free_integral(omega);
+        value += free;
+        error += free_err;
     }
 
     Ok(SliceFieldOutput {

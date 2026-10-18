@@ -295,6 +295,22 @@ impl SliceModel for LensField {
         }
     }
 
+    fn free_integral(&self, omega: f64) -> (Complex64, f64) {
+        // The macro-only closed form (`referee.py::macro_only_integral`):
+        //   I = (2 pi / (omega sqrt|L0 L2|)) e^{i (sgn L0 + sgn L2) pi/4}
+        //       e^{i omega Kc},   Kc = 1/2|beta|^2 - b0^2/(2 L0) - b1^2/(2 L2),
+        // with b the source in the shear-diagonal frame.  The stored `kc` is
+        // the 1/2|beta|^2 term; the rest completes each quadratic's square.
+        let (l0, l2) = (self.lambda0, self.lambda2);
+        let kc = self.kc
+            - self.beta[0] * self.beta[0] / (2.0 * l0)
+            - self.beta[1] * self.beta[1] / (2.0 * l2);
+        let mag = std::f64::consts::TAU / (omega * (l0 * l2).abs().sqrt());
+        let phase = (l0.signum() + l2.signum()) * std::f64::consts::FRAC_PI_4 + omega * kc;
+        let v = Complex64::from_polar(mag, phase);
+        (v, 8.0 * f64::EPSILON * v.norm() * (1.0 + omega * kc.abs()))
+    }
+
     fn with_beta(&self, beta: [f64; 2]) -> Self {
         LensField { beta, kc: 0.5 * (beta[0] * beta[0] + beta[1] * beta[1]), ..self.clone() }
     }
@@ -329,10 +345,31 @@ impl<'a> LensEval<'a> {
 }
 
 impl<'a> SliceEval for LensEval<'a> {
+    /// The free/macro quadratic part `1/2 L0 z0^2 - b0 z0 + x2part` on the
+    /// real core; `phi_core_real` subtracts the profile potentials from it.
+    #[inline]
+    fn phi_free_core_real(&self, r: f64, x0: f64, sgn: f64) -> f64 {
+        self.quad_real(x0 + sgn * r) + self.x2_part_real()
+    }
+
+    #[inline]
+    fn phi_free_core_complex(&self, r: f64, x0: f64, sgn: f64) -> Complex64 {
+        let z0 = Complex64::from(x0 + sgn * r);
+        0.5 * Complex64::from(self.field.lambda0) * z0 * z0
+            - Complex64::from(self.field.beta[0]) * z0
+            + self.x2_part_complex()
+    }
+
+    #[inline]
+    fn phi_free_tail(&self, z: Complex64) -> Complex64 {
+        0.5 * Complex64::from(self.field.lambda0) * z * z
+            - Complex64::from(self.field.beta[0]) * z
+            + self.x2_part_complex()
+    }
+
     #[inline]
     fn phi_core_real(&self, r: f64, x0: f64, sgn: f64) -> f64 {
-        let z0 = x0 + sgn * r;
-        let mut v = self.quad_real(z0) + self.x2_part_real();
+        let mut v = self.phi_free_core_real(r, x0, sgn);
         for (k, c) in self.field.components.iter().enumerate() {
             let t = (x0 - c.x) + sgn * r;
             let d = self.dk[k].re;
@@ -348,9 +385,7 @@ impl<'a> SliceEval for LensEval<'a> {
     #[inline]
     fn phi_core_complex(&self, r: f64, x0: f64, sgn: f64) -> Complex64 {
         let z0 = Complex64::from(x0 + sgn * r);
-        let mut v = 0.5 * Complex64::from(self.field.lambda0) * z0 * z0
-            - Complex64::from(self.field.beta[0]) * z0
-            + self.x2_part_complex();
+        let mut v = self.phi_free_core_complex(r, x0, sgn);
         for (k, c) in self.field.components.iter().enumerate() {
             let t = z0 - c.x;
             let w = t * t + self.dk[k] * self.dk[k];
@@ -361,9 +396,7 @@ impl<'a> SliceEval for LensEval<'a> {
 
     #[inline]
     fn phi_tail(&self, z: Complex64) -> Complex64 {
-        let mut v = 0.5 * Complex64::from(self.field.lambda0) * z * z
-            - Complex64::from(self.field.beta[0]) * z
-            + self.x2_part_complex();
+        let mut v = self.phi_free_tail(z);
         for (k, c) in self.field.components.iter().enumerate() {
             let t = z - c.x;
             let w = t * t + self.dk[k] * self.dk[k];
