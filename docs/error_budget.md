@@ -25,7 +25,11 @@ Budget composition (all terms conservative):
 - **Per-panel quadrature differences** — GL20 with the embedded differences;
   `tol_outer = 1e-13` per unit length in `x2`, `tol_inner = 1e-14` per unit
   length in `z0` (defaults).  The accepted panel's budget is the *observed*
-  disagreement `|l + r − whole|` plus both halves' propagated errors.
+  disagreement `|l + r − whole|` plus both halves' propagated errors.  (A
+  GL10-probe acceptance alternative was measured and rejected — item 6,
+  `results/acceptance_probe.{csv,md}`: a cheaper acceptance proxy is
+  necessarily weaker, and the resulting tree inflation outweighs the
+  per-panel node saving.)
 - **Nested propagation** — each outer node's value is an inner solve; its
   reported error is propagated through the Jacobian into the outer budget.
 - **Tail truncation** — the outer tails probe their integrand until it decays

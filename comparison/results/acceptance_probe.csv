@@ -1,0 +1,21 @@
+case,omega,classic_nodes,probe_nodes,ratio,rel_diff
+slice_field two-mass,1,1846,1926,0.9585,8.858e-17
+slice_field two-mass,3,2566,2646,0.9698,9.251e-17
+slice_field two-mass,10,3846,4006,0.9601,1.107e-15
+slice_field two-mass,30,5046,5846,0.8632,1.168e-15
+slice_field single mass,1,1326,1366,0.9707,1.039e-16
+slice_field single mass,10,2606,2726,0.9560,1.570e-15
+slice_field single mass,30,3886,4806,0.8086,3.020e-15
+slice_field single mass,100,10286,12486,0.8238,8.463e-15
+slice_field single mass,300,27886,34486,0.8086,2.557e-14
+lens_field macro type I,3,3086,3206,0.9626,3.163e-17
+lens_field macro type II,3,3166,3286,0.9635,2.096e-16
+lens_field macro type III,3,3086,3206,0.9626,1.446e-15
+lens_field sis,3,526,566,0.9293,0.000e0
+lens_field cis,3,526,486,1.0823,0.000e0
+lens_field nfw,3,526,486,1.0823,2.136e-16
+slice_field_batch sweep (5 omegas),10,14680,17600,0.8341,8.858e-17
+slice_field_batch map (3x3),3,2740,2780,0.9856,8.719e-16
+rc_1d_batch P-LPI grid (512),10,3400,4640,0.7328,0.000e0
+slice_inner_rc x2=0.2 (real),10,880,880,1.0000,1.491e-15
+slice_inner_rc x2=1.5+e4*0.5 (complex),10,800,800,1.0000,1.020e-15
