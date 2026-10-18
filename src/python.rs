@@ -984,8 +984,12 @@ impl PyPointMassField {
     /// Nakamura-Deguchi closed form); `method="mesh"` is the legacy flow
     /// solver (delta/flow_steps/domain/quad_order apply to it only). `tol`
     /// sets both inner and outer acceptance tolerances; `margin` /
-    /// `margin_outer` resize the inner/outer cores.
-    #[pyo3(signature = (omega, *, method="slice", tol=None, margin=None, margin_outer=None, delta=None, flow_steps=None, domain=None, quad_order=None))]
+    /// `margin_outer` resize the inner/outer cores.  `subtract_free` switches
+    /// the slice solver to the low-omega free-space subtraction: integrate
+    /// `e^{i w phi_free}(e^{-i w Psi} - 1)` on the same contour and add the
+    /// exact `2 pi i / w` — removes the `eps |I_free|` floor from `F - 1` at
+    /// `omega <~ 1e-2` (exact by the same Cauchy construction).
+    #[pyo3(signature = (omega, *, method="slice", tol=None, margin=None, margin_outer=None, subtract_free=false, delta=None, flow_steps=None, domain=None, quad_order=None))]
     fn solve(
         &self,
         omega: f64,
@@ -993,6 +997,7 @@ impl PyPointMassField {
         tol: Option<f64>,
         margin: Option<f64>,
         margin_outer: Option<f64>,
+        subtract_free: bool,
         delta: Option<f64>,
         flow_steps: Option<usize>,
         domain: Option<(f64, f64)>,
@@ -1001,10 +1006,16 @@ impl PyPointMassField {
         if !(omega > 0.0) {
             return Err(PyValueError::new_err("omega must be > 0"));
         }
+        if subtract_free && method == "mesh" {
+            return Err(PyValueError::new_err(
+                "subtract_free applies to method='slice' only",
+            ));
+        }
         match method {
             "slice" | "auto" => {
                 let mut cfg = SliceConfig {
                     omega,
+                    subtract_free,
                     interrupt: Some(interrupt_hook()),
                     ..SliceConfig::default()
                 };
@@ -1299,19 +1310,27 @@ impl PyLensField {
         Ok(make_output(2, omega, out.value, out.error, method, steps))
     }
 
-    /// Exact finite-omega field integral (RC engine; P2a).
-    #[pyo3(signature = (omega, *, tol=None, margin=None, margin_outer=None))]
+    /// Exact finite-omega field integral (RC engine; P2a).  `subtract_free`
+    /// switches to the low-omega free-space subtraction (the macro quadratic
+    /// is the free part; see `PointMassField.solve`).
+    #[pyo3(signature = (omega, *, tol=None, margin=None, margin_outer=None, subtract_free=false))]
     fn solve(
         &self,
         omega: f64,
         tol: Option<f64>,
         margin: Option<f64>,
         margin_outer: Option<f64>,
+        subtract_free: bool,
     ) -> PyResult<PyOutput> {
         if !(omega > 0.0) {
             return Err(PyValueError::new_err("omega must be > 0"));
         }
-        let mut cfg = SliceConfig { omega, interrupt: Some(interrupt_hook()), ..SliceConfig::default() };
+        let mut cfg = SliceConfig {
+            omega,
+            subtract_free,
+            interrupt: Some(interrupt_hook()),
+            ..SliceConfig::default()
+        };
         if let Some(t) = tol {
             cfg.tol_inner = t;
             cfg.tol_outer = t;

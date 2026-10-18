@@ -509,6 +509,7 @@ class PointMassField:
         tol: float | None = None,
         margin: float | None = None,
         margin_outer: float | None = None,
+        subtract_free: bool = False,
         delta: float | None = None,
         flow_steps: int | None = None,
         domain: tuple[float, float] | None = None,
@@ -522,6 +523,10 @@ class PointMassField:
         legacy flow solver (`delta`, `flow_steps`, `domain` and `quad_order`
         apply to it only).  `tol` sets both inner and outer acceptance
         tolerances; `margin` / `margin_outer` resize the inner/outer cores.
+        `subtract_free` switches the slice solver to the low-omega free-space
+        subtraction (integrate `e^{i w phi_free}(e^{-i w Psi} - 1)` and add
+        the exact `2 pi i / w`; removes the `eps |I_free|` floor from `F - 1`
+        at `omega <~ 1e-2`).
         """
         ...
 
@@ -660,8 +665,11 @@ class LensField:
         tol: float | None = None,
         margin: float | None = None,
         margin_outer: float | None = None,
+        subtract_free: bool = False,
     ) -> Result:
-        """Exact finite-omega field integral (RC engine)."""
+        """Exact finite-omega field integral (RC engine).  `subtract_free`
+        switches to the low-omega free-space subtraction (the macro quadratic
+        is the free part; see `PointMassField.solve`)."""
         ...
 
     def sweep(
