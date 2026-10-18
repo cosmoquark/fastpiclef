@@ -5,6 +5,9 @@
 
 *.egg-info/
 
+# Generated prototype data products (regenerable binary maps)
+prototypes/results/nfw_elliptical_shear/maps.npz
+
 /refs
 
 ### Python .gitignore ###

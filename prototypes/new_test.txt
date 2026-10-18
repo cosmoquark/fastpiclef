@@ -1,0 +1,5 @@
+Elliptical NFW + shear
+
+NFW Halo: M_200 = 10^13 M_Sun, z_l = 0.5, z_s = 1.5, e_1=0.2, e_2=0, 500 x 500 grid of source positions, y_1 = [-1.5, 1.5], y_2[-1.5, 1.5], dimensionless frequency w = 1, 10, 100
+
+FIONA takes 130 sec
