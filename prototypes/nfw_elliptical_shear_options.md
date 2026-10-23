@@ -111,21 +111,32 @@ Every pixel of a map is a different β; in the figures the axes `y1,y2` are
 | `.../maps.npz` | compact float32 maps (6 MB; opt-in via `--save-data`) |
 | `Journal.typ` | appended `#opencode-entry("2026-10-22", ...)`; `Journal.pdf` recompiled |
 
-Run:
+Run (preferred: dedicated GWLENS environment):
 
 ```bash
+pixi run -e gwlens nfw-elliptical
+```
+
+The `gwlens` environment installs only the solver's light runtime deps
+(`finufft`, `numexpr`, `threadpoolctl`, `astropy`); the `gwlens-setup` task
+clones the pinned GWLENS source into `.pixi/gwlens-src` (gitignored) and the
+task puts it on `PYTHONPATH`.  This avoids GWLENS's heavy `bilby`/`lalsuite`
+metadata, which does not build here.
+
+Fallback from the comparison environment, using a scratch clone:
+
+```bash
+git clone https://github.com/hsreekanth15/GWLENS /tmp/GWLENS
 pixi run -e comparison python prototypes/nfw_elliptical_shear.py \
     --gwlens-dir /tmp/GWLENS
 ```
 
 Options: `--quick` (n=64, separate output dir), `--solver auto|fpl|gwlens`,
-`--force-fpl`, `--save-data`, `--no-plot`, `--from-lenstronomy`.
+`--force-fpl`, `--save-data`, `--no-plot`, `--from-lenstronomy`.  To pass
+options to the task, use the direct form:
+`pixi run -e gwlens bash -c 'PYTHONPATH=.pixi/gwlens-src python prototypes/nfw_elliptical_shear.py --quick'`.
 
-GWLENS is **not vendored** (`refs/` is read-only). Get a scratch clone:
-
-```bash
-git clone https://github.com/hsreekanth15/GWLENS /tmp/GWLENS
-```
+GWLENS is **not vendored** (`refs/` is read-only).
 
 ---
 
@@ -488,8 +499,11 @@ A1 + A2 are worth doing regardless.
 
 - Environment: `pixi run -e comparison` (has `fastpiclef`, numpy, scipy,
   matplotlib, astropy/lenstronomy, finufft).
-- GWLENS: scratch clone at `/tmp/opencode/GWLENS`; symlink `/tmp/GWLENS`.
-  Not vendored (`refs/` is read-only).
+- GWLENS (preferred): the `gwlens` pixi environment (`gwlens` feature in
+  `pyproject.toml`, pinned commit `e73167af...`); `gwlens-setup` clones into
+  `.pixi/gwlens-src` (gitignored).  Fallback: a scratch clone at
+  `/tmp/opencode/GWLENS` (symlink `/tmp/GWLENS`).  Not vendored (`refs/` is
+  read-only).
 - FIONA: `refs/FIONA` (for the potential-level check and the notebook case).
 - Machine: Intel i7-10710U, 6 physical cores; the box was loaded during the
   measurements (load average 4–8), so timings are not quiet-window numbers.

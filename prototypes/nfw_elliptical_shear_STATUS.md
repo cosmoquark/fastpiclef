@@ -80,7 +80,13 @@ is whether to optimize for exactness at high ω (A1+A4/A5), fast high-ω panels
 ## Commands
 
 ```bash
-# quick smoke test (n=64, separate output dir)
+# dedicated GWLENS environment (preferred; clones the pinned source first run)
+pixi run -e gwlens nfw-elliptical
+
+# quick smoke test in that env (n=64, separate output dir)
+pixi run -e gwlens bash -c 'PYTHONPATH=.pixi/gwlens-src python prototypes/nfw_elliptical_shear.py --quick'
+
+# fallback: quick smoke test with a scratch clone
 pixi run -e comparison python prototypes/nfw_elliptical_shear.py \
     --quick --gwlens-dir /tmp/GWLENS
 
@@ -94,8 +100,11 @@ pixi run -e comparison python prototypes/nfw_elliptical_shear.py \
     --outdir /tmp/gwlens_full --no-plot
 ```
 
-GWLENS is a scratch clone at `/tmp/opencode/GWLENS` (symlink `/tmp/GWLENS`);
-it is not vendored because `refs/` is read-only.
+GWLENS is available in the dedicated `gwlens` pixi env (`pixi run -e gwlens
+nfw-elliptical`); its `gwlens-setup` task clones the pinned source into
+`.pixi/gwlens-src` (gitignored).  A scratch clone at `/tmp/opencode/GWLENS`
+(symlink `/tmp/GWLENS`) remains the fallback for the comparison env.  It is
+not vendored because `refs/` is read-only.
 
 ## Cautions
 

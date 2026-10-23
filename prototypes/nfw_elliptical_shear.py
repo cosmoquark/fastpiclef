@@ -83,9 +83,17 @@ Usage
     pixi run -e comparison python prototypes/nfw_elliptical_shear.py --solver gwlens
     pixi run -e comparison python prototypes/nfw_elliptical_shear.py --from-lenstronomy
 
-GWLENS is not vendored (``refs/`` is read-only); get a scratch clone with
+GWLENS is available two ways:
 
-    git clone https://github.com/hsreekanth15/GWLENS /tmp/GWLENS
+* the dedicated pixi environment (preferred):
+
+      pixi run -e gwlens nfw-elliptical
+
+* a scratch clone used from the comparison environment:
+
+      git clone https://github.com/hsreekanth15/GWLENS /tmp/GWLENS
+      pixi run -e comparison python prototypes/nfw_elliptical_shear.py \
+          --gwlens-dir /tmp/GWLENS
 
 See ``prototypes/nfw_elliptical_shear_options.md`` for the full options list
 and derivations, and ``prototypes/nfw_elliptical_shear_STATUS.md`` for the
@@ -235,16 +243,20 @@ def fpl_map_native(lf, info, n, omega, tol=1e-6, omega_map=None):
 # ---------------------------------------------------------------------------
 # GWLENS (optional fast dense-map engine)
 # ---------------------------------------------------------------------------
-def import_gwlens(gwlens_dir):
-    if gwlens_dir not in sys.path:
-        sys.path.insert(0, gwlens_dir)
+def import_gwlens(gwlens_dir=None):
+    """Import GWLENS: installed package (gwlens env) or a scratch clone."""
+    if gwlens_dir:
+        if gwlens_dir not in sys.path:
+            sys.path.insert(0, gwlens_dir)
     try:
         from gwlens.solver import solver2d as gs
     except Exception as exc:  # pragma: no cover - environment-dependent
         raise RuntimeError(
-            "GWLENS is not importable.  Clone it outside refs/, e.g.\n"
+            "GWLENS is not importable.  Preferred: use the dedicated env\n"
+            "    pixi run -e gwlens nfw-elliptical\n"
+            "or `pixi install -e gwlens`.  Fallback: clone it outside refs/\n"
             "    git clone https://github.com/hsreekanth15/GWLENS /tmp/GWLENS\n"
-            "and pass --gwlens-dir /tmp/GWLENS.\n"
+            "and pass --gwlens-dir /tmp/GWLENS from the comparison env.\n"
             f"Original error: {exc}"
         ) from exc
     return gs
@@ -408,8 +420,9 @@ def main():
     ap.add_argument("--solver", choices=["auto", "fpl", "gwlens"], default="auto")
     ap.add_argument("--force-fpl", action="store_true",
                     help="attempt fpl even outside its measured envelope")
-    ap.add_argument("--gwlens-dir", default=os.environ.get("GWLENS_DIR", "/tmp/GWLENS"),
-                    help="local GWLENS clone (default /tmp/GWLENS)")
+    ap.add_argument("--gwlens-dir", default=os.environ.get("GWLENS_DIR", ""),
+                    help="local GWLENS clone; empty = use the installed package "
+                         "(the dedicated `gwlens` pixi environment)")
     ap.add_argument("--outdir", default=os.path.join(os.path.dirname(__file__),
                                                      "results", "nfw_elliptical_shear"))
     ap.add_argument("--no-plot", action="store_true")

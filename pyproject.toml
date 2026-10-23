@@ -64,12 +64,31 @@ tqdm = "*"
 plind = "*"
 fast_histogram = "*"
 
+# GWLENS: the third-party dense-map comparator for the elliptical-NFW
+# investigation.  The pinned source is cloned into .pixi/gwlens-src by the
+# `gwlens-setup` task; it is not vendored (refs/ is read-only).  The package's
+# own metadata pulls the heavy bilby/lalsuite stack, which the solver does not
+# import, so only the solver's light runtime deps are installed here.  In the
+# `comparison` env GWLENS is still used from a scratch clone via
+# `--gwlens-dir`.
+[tool.pixi.feature.gwlens.dependencies]
+# Only gwlens.solver.solver2d is used.  Its heavy PE/TDF dependencies
+# (bilby/lalsuite) are never imported; installing the package from PyPI would
+# drag them in (and they do not build here), so the pinned source is cloned by
+# the `gwlens-setup` task into .pixi/ (gitignored) and put on PYTHONPATH.
+# These are the solver's actual runtime needs.
+finufft = "*"
+numexpr = "*"
+threadpoolctl = "*"
+astropy = "*"
+
 [tool.pixi.environments]
 default = { solve-group = "main" }
 # `notebook` also pulls in `comparison` so notebooks/comparison.ipynb (which
 # drives the reference codes) can run in the Jupyter env.
 notebook = { features = ["notebook", "comparison"], solve-group = "main" }
 comparison = { features = ["comparison"], solve-group = "main" }
+gwlens = { features = ["gwlens"], solve-group = "main" }
 
 [tool.pixi.tasks]
 # Build/install the extension into the active environment.
@@ -108,3 +127,9 @@ nd-band = { cmd = "python -m comparison.nd_band", depends-on = ["build"] }
 low-omega = { cmd = "python -m comparison.low_omega", depends-on = ["build"] }
 plot-bench = { cmd = "python -m comparison.plot_bench", depends-on = ["build"] }
 profiles-fiona = { cmd = "python comparison/profiles_fiona_check.py", depends-on = ["build"] }
+
+# The elliptical-NFW + shear prototype in the dedicated GWLENS environment.
+[tool.pixi.feature.gwlens.tasks]
+# Pin the scratch source (never inside refs/); .pixi/ is gitignored.
+gwlens-setup = { cmd = "bash -c 'set -e; if [ ! -d .pixi/gwlens-src/.git ]; then git clone https://github.com/hsreekanth15/GWLENS .pixi/gwlens-src; fi; git -C .pixi/gwlens-src checkout e73167afb84273c1e0f4cb488a1c5a2fc4d7d652'" }
+nfw-elliptical = { cmd = "PYTHONPATH=.pixi/gwlens-src python prototypes/nfw_elliptical_shear.py", depends-on = ["build", "gwlens-setup"] }
