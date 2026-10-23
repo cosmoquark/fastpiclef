@@ -1,7 +1,8 @@
 # Elliptical NFW + shear — options, status, and resume notes
 
 **Date:** 2026-10-23 (work started 2026-10-22)
-**Status:** prototype complete; options to review; no commit made.
+**Status:** prototype complete; options to review; committed as `e6b36d67`
+and `e4ee175c` (no push).
 **Scope:** the `prototypes/new_test.txt` case — an elliptical NFW halo plus
 external shear, 500×500 source-plane maps of `|F(ω, β)|`.
 
@@ -488,10 +489,11 @@ A1 + A2 are worth doing regardless.
    7.7e-2, 1.1e-4, 3.5e-4, 5.6e-6 relative errors at five points; the
    reported budget did not always cover the true error. Treat it as
    asymptotic, not exact; validate any fast geometric mode against RC.
-7. **No commit made** — `prototypes/` is untracked; `notebooks/` has staged
-   additions from an earlier session (not ours). `Journal.typ`/`Journal.pdf`
-   are not tracked by git in this checkout (`git ls-files` is empty for them);
-   they were updated and compiled locally.
+7. **Commits** — `e6b36d67` (prototype) and `e4ee175c` (gwlens Pixi env);
+   no push. The pre-existing `comparison/results/*.csv` edits and
+   `notebooks/` additions remain in the working-copy commit (not ours).
+   `maps.npz` is gitignored. `Journal.typ`/`Journal.pdf` are excluded via
+   `.git/info/exclude`, so the journal entries and PDF are local-only.
 
 ---
 

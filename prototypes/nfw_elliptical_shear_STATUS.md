@@ -24,7 +24,8 @@ full options list and derivations.
   - `prototypes/results/nfw_elliptical_shear/maps.npz` (6 MB, optional;
     regenerated with `--save-data`)
 - The Journal has a `#opencode-entry("2026-10-22", ...)` recording the
-  milestone; `Journal.pdf` was recompiled. No commit was made.
+  milestone; `Journal.pdf` was recompiled. The work is committed as `e6b36d67`
+(prototype) and `e4ee175c` (gwlens Pixi environment); no push.
 
 ## Headline numbers (this 6-core box, load-dependent)
 
@@ -120,5 +121,6 @@ not vendored because `refs/` is read-only.
   This affects `hybrid`/`geometric`, not the RC maps.
 - The FIONA fixed-grid attempt was unconverged; the valid FIONA check is at
   the potential level.
-- No commit made. `prototypes/` is untracked; `notebooks/` has staged
-  additions from an earlier session (not ours).
+- Committed as `e6b36d67` (prototype) and `e4ee175c` (gwlens env); no push.
+  The pre-existing `comparison/results/*.csv` edits and `notebooks/` additions
+  remain in the working-copy commit (not ours).  `maps.npz` is gitignored.
