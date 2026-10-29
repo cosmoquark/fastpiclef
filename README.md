@@ -93,14 +93,14 @@ Requirements:
 
 ### uv
 
-The source is on Codeberg (`https://codeberg.org/cosmoquark/fast_piclef.git`,
-primary) with a GitHub mirror
-(`https://github.com/cosmoquark/fastpiclef.git`); substitute whichever you have
-access to.
+The source is on GitHub (`https://github.com/cosmoquark/fastpiclef.git`,
+primary) with a Codeberg mirror
+(`https://codeberg.org/cosmoquark/fast_piclef.git`); substitute whichever you
+have access to.
 
 ```bash
-git clone https://codeberg.org/cosmoquark/fast_piclef.git
-cd fast_piclef
+git clone https://github.com/cosmoquark/fastpiclef.git
+cd fastpiclef
 uv venv            # or use an existing environment
 uv pip install .
 ```
@@ -108,8 +108,8 @@ uv pip install .
 Straight from the repository, or into an existing uv project:
 
 ```bash
-uv pip install "fastpiclef @ git+https://codeberg.org/cosmoquark/fast_piclef.git"
-uv add "fastpiclef @ git+https://codeberg.org/cosmoquark/fast_piclef.git"
+uv pip install "fastpiclef @ git+https://github.com/cosmoquark/fastpiclef.git"
+uv add "fastpiclef @ git+https://github.com/cosmoquark/fastpiclef.git"
 ```
 
 Both forms build the extension in release mode through maturin and also
@@ -121,11 +121,11 @@ needs an environment to install into — `uv venv` first, or pass `--system`.
 The same, with pip instead of uv:
 
 ```bash
-git clone https://codeberg.org/cosmoquark/fast_piclef.git
-cd fast_piclef
+git clone https://github.com/cosmoquark/fastpiclef.git
+cd fastpiclef
 python -m venv .venv && . .venv/bin/activate
 pip install .
-# or: pip install "fastpiclef @ git+https://codeberg.org/cosmoquark/fast_piclef.git"
+# or: pip install "fastpiclef @ git+https://github.com/cosmoquark/fastpiclef.git"
 ```
 
 For an editable install while developing the bindings, install `maturin`
@@ -134,43 +134,130 @@ activated environment; that is exactly what `pixi run build` does.
 
 ### Building a wheel once (installing later without Rust)
 
-```bash
-uv build --wheel       # or: maturin build --release
-```
-
-This produces `dist/fastpiclef-0.1.0-cp312-abi3-linux_x86_64.whl` (release
-profile, type stub included).  Anyone can then run
-`uv pip install dist/fastpiclef-*.whl` or `pip install ...` with **no Rust
-toolchain at all** — the install takes milliseconds.  The `abi3` tag makes the
-wheel valid for any Python >= 3.12, but that `linux_x86_64` tag is
-**host-specific**: it is not uploadable to PyPI and may fail at import against
-an older glibc.  For a wheel you can hand out, cross-build against a manylinux
-policy (needs `zig`: `pip install ziglang`, or `zig` from conda-forge):
+One command, no docker:
 
 ```bash
-maturin build --release --zig --compatibility manylinux_2_17 --out dist
-# -> fastpiclef-0.1.0-cp312-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
-maturin sdist --out dist    # ~260 KB: Cargo.lock, src/, stub, pyproject.toml
+bash scripts/build-dist.sh     # artifacts only
+bash scripts/release.sh        # artifacts + regenerated index, then prints the publish steps
 ```
 
-(The sdist is deliberately lean — the comparison harness, notebooks,
-prototypes and report are excluded in `[tool.maturin]`.)  Publishing those two
-files (TestPyPI first, then PyPI with `maturin upload`) or attaching the wheel
-to a release is all that stands between the current state and a
-compiler-free install for users.
+It builds in a throwaway `uv` venv holding `maturin` + `zig` (from PyPI) and
+writes to `dist/`:
+
+```
+fastpiclef-0.1.0-cp312-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+fastpiclef-0.1.0.tar.gz          # ~260 KB sdist
+```
+
+The wheel installs in milliseconds with **no Rust toolchain**: verified on
+CPython 3.12, 3.13 and 3.14 (one `abi3` wheel covers all three) with `cargo`
+removed from `PATH`, giving bit-identical results.  The sdist is deliberately
+lean — the comparison harness, notebooks, prototypes and report are excluded
+in `[tool.maturin]`.
+
+Why zig at all: the crate has no C dependencies (the wheel needs only
+`libc`/`libm`), but a native build records the build machine's glibc symbols
+(`GLIBC_2.44` here), which PyPI rejects and older systems cannot import.  Zig
+links the same Rust objects against an old glibc (`GLIBC_2.14`), which is what
+the `manylinux_2_17` tag promises.  It is a link-time tool only: not a
+dependency of the package, not in `Cargo.toml`, not in the wheel.  Building
+inside a manylinux container (as CI does) is the alternative; `auditwheel`
+alone cannot help, since it bundles libraries rather than rewriting symbol
+versions.
+
+Then upload — TestPyPI rehearsal first:
+
+```bash
+maturin upload --repository-url https://test.pypi.org/legacy/ dist/*   # token
+maturin upload dist/*                                                  # MATURIN_PYPI_TOKEN
+```
 
 ### Consuming it as a dependency
 
 ```bash
-uv add fastpiclef                    # once a wheel is on PyPI — no Rust
+uv add fastpiclef                    # once the wheel is on PyPI — no Rust
 uv add "fastpiclef @ <wheel-url>"    # a release asset — no Rust
-uv add "fastpiclef @ git+https://codeberg.org/cosmoquark/fast_piclef.git"  # source: Rust required
+uv add "fastpiclef @ git+https://github.com/cosmoquark/fastpiclef.git"  # source: Rust required
 ```
 
-The git form is a real, working one-liner, but note the difference in cost:
-`uv` records the commit in `uv.lock` and caches the built wheel, so the ~45 s
-Rust build happens once per commit per machine; pip re-builds on every fresh
-environment and fails outright where no Rust toolchain exists.
+The first form is the one to aim for: one line, no URL, no compiler, and
+`uv run --with fastpiclef script.py` works for one-off scripts too.  Until the
+wheel is published, the git form is a working fallback, but note the cost
+difference: `uv` records the commit in `uv.lock` and caches the built wheel, so
+the ~45 s Rust build happens once per commit per machine; pip re-builds on
+every fresh environment and fails outright where no Rust toolchain exists.
+
+#### Without PyPI: a static index on GitHub Pages (recommended)
+
+A plain HTML PEP 503 index needs no server: GitHub Pages can serve it, and its
+links point at the release assets, so no wheel is committed to git.  One-time
+setup: enable Pages for this repository from `main` / `docs` (free plans need a
+public repository).  At each release, `bash scripts/release.sh --publish`
+builds, regenerates `docs/simple/`, tags, pushes and attaches `dist/*`.
+
+Collaborators then configure this **once** and never touch a URL again:
+
+```toml
+# pyproject.toml
+[project]
+dependencies = ["fastpiclef"]
+
+[[tool.uv.index]]
+url = "https://cosmoquark.github.io/fastpiclef/simple"
+```
+
+```bash
+uv sync                 # installs the newest published wheel, no Rust
+uv lock --upgrade       # picks up the next release
+```
+
+(`uv add fastpiclef --index https://cosmoquark.github.io/fastpiclef/simple`
+writes the same block.)  Verified with the index and the wheels on *different*
+hosts — the realistic Pages-plus-release-assets split: uv resolved the
+version, downloaded the wheel from the asset URL, installed it with `cargo`
+removed from `PATH`, and `uv.lock` records the registry plus the artifact's
+sha256.
+
+#### Without PyPI: a pinned release-asset URL (zero setup)
+
+If you would rather not enable Pages, the same assets work as a direct URL —
+but the URL names one exact file, so each new release means editing every
+consumer's `pyproject.toml`.  Attach `dist/*` to a tag on the public
+repository (GitHub and Codeberg both serve
+`…/releases/download/<tag>/<file>`), and the collaborator runs:
+
+```bash
+uv add "fastpiclef @ https://github.com/cosmoquark/fastpiclef/releases/download/v0.1.0/fastpiclef-0.1.0-cp312-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+```
+
+`uv` records that as a normal source and pins it (URL + sha256) in `uv.lock`:
+
+```toml
+[tool.uv.sources]
+fastpiclef = { url = "https://…/fastpiclef-0.1.0-…whl" }
+```
+
+Verified: with `cargo` removed from `PATH` the install is instant, and deleting
+`uv.lock` and re-resolving still works (the URL lives in `pyproject.toml`, not
+only in the lock).  Put that block in a starter `pyproject.toml` and nobody
+ever types the URL.
+
+For several platforms, list one source per platform with a marker — `uv`
+resolves universally, so every listed wheel must exist:
+
+```toml
+[tool.uv.sources]
+fastpiclef = [
+  { url = "https://…/fastpiclef-0.1.0-cp312-abi3-manylinux_2_17_x86_64.…whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+  { url = "https://…/fastpiclef-0.1.0-cp312-abi3-macosx_11_0_arm64.whl",      marker = "sys_platform == 'darwin' and platform_machine == 'arm64'" },
+]
+```
+
+Two caveats.  `uv add --find-links <page>` resolves once but is *not* written to
+`pyproject.toml`, so a later re-resolve forgets it — prefer a URL source or a
+PEP 503 index (`uv add fastpiclef --index https://…/simple`, which does
+persist).  And release assets on a *private* repository require
+authentication, so this route assumes a public repository.
 
 ### pixi (development, notebooks, comparison harness)
 

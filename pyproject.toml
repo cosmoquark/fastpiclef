@@ -16,6 +16,21 @@ build-backend = "maturin"
 # of the Rust crate (whose name carries a legacy typo).
 features = ["python"]
 module-name = "fastpiclef"
+# Keep the published sdist to what is needed to rebuild the extension: the
+# comparison harness (with its result datasets), notebooks, prototypes and the
+# report are repository-only.  This does not affect the wheel (which holds the
+# extension module, the stub and py.typed) nor local builds.
+exclude = [
+    "comparison/**",
+    "notebooks/**",
+    "prototypes/**",
+    "docs/**",
+    "examples/**",
+    "julia/**",
+    "scripts/**",
+    "Journal.typ",
+    "AGENTS.md",
+]
 
 # --- pixi: a build/comparison env (default) and a `notebook` sub-environment
 # --- that adds Jupyter on top for running notebooks/getting_started.ipynb.
@@ -133,3 +148,8 @@ profiles-fiona = { cmd = "python comparison/profiles_fiona_check.py", depends-on
 # Pin the scratch source (never inside refs/); .pixi/ is gitignored.
 gwlens-setup = { cmd = "bash -c 'set -e; if [ ! -d .pixi/gwlens-src/.git ]; then git clone https://github.com/hsreekanth15/GWLENS .pixi/gwlens-src; fi; git -C .pixi/gwlens-src checkout e73167afb84273c1e0f4cb488a1c5a2fc4d7d652'" }
 nfw-elliptical = { cmd = "PYTHONPATH=.pixi/gwlens-src python prototypes/nfw_elliptical_shear.py", depends-on = ["build", "gwlens-setup"] }
+
+# Release artifacts (see the README, "Building a wheel once").  `wheel` builds
+# one abi3 manylinux2014 wheel, valid for CPython >= 3.12 on x86_64 Linux; the
+# sdist carries the sources so other platforms can build locally.  `pack`
+# writes both to dist/ (gitignored).
